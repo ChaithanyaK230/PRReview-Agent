@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from redis.asyncio import Redis
 
 from core.analysis.config import CONFIG_PATH, load_config
+from core.analysis.runners import run_analysis
 from core.analysis.workspace import prepare_workspace
 from core.github.app_auth import GITHUB_HEADERS, InstallationTokenCache, make_app_jwt
 from core.github.client import GitHubClient
@@ -57,14 +58,17 @@ async def main(repo: str, number: int) -> None:
                 status = "installed" if side.installed else f"NOT installed: {side.log[:200]}"
                 print(f"  {side.side}: strategy={side.toolchain.strategy}, {status} ({side.duration_ms} ms)")
 
-            if ws.can_run_tests:  # internet is off from here on
-                for side in (ws.base, ws.head):
-                    result = await sbx.exec([side.python, "-m", "pytest", "-q", "--no-header"],
-                                            cwd=side.root, timeout_s=120)
-                    lines = result.stdout.strip().splitlines() or ["(no output)"]
-                    print(f"  pytest on {side.side}: exit {result.exit_code}  {lines[-1]}")
-                    if result.exit_code >= 2:  # 2+ = tests couldn't even be collected/run: show why
-                        print("    " + "\n    ".join(lines[-15:]))
+            # Step 19: structured results (internet is off from here on)
+            analysis = await run_analysis(sbx, ws, config)
+            for side, outcomes in (("base", analysis.base), ("head", analysis.head)):
+                for o in outcomes:
+                    state = "ok" if o.available else f"UNAVAILABLE ({o.log[:120]})"
+                    print(f"  [{side}] {o.tool}: {state}, exit {o.exit_code}, {o.duration_ms} ms")
+                    for f in o.findings:
+                        print(f"      {f.severity:<7} {f.rule:<14} {f.path}:{f.line}  {f.message[:70]}")
+                    for t in o.tests:
+                        first = (t.message or "").strip().splitlines()[-1:] or [""]
+                        print(f"      {t.outcome:<7} {t.test_id}  {first[0][:90]}")
         print("sandbox killed")
     await redis.aclose()
 

@@ -39,3 +39,15 @@ def test_yaml_tags_cannot_create_objects():
     # yaml.load (unsafe) would try to build a Python object here; safe_load refuses
     with pytest.raises(FatalError):
         load_config("install: !!python/object/apply:os.system ['echo hacked']")
+
+
+@pytest.mark.parametrize("path, ignored", [
+    ("migrations/0001_init.py", True),        # top-level folder
+    ("app/migrations/0001_init.py", True),
+    ("uv.lock", True),
+    ("frontend/dist/bundle.js", True),
+    ("app/billing.py", False),
+    ("app/migrations_helper.py", False),
+])
+def test_ignore_paths(path, ignored):
+    assert RepoConfig().is_ignored(path) is ignored

@@ -1,3 +1,4 @@
+from fnmatch import fnmatch
 from typing import Literal
 
 import yaml
@@ -22,6 +23,10 @@ class RepoConfig(BaseModel):
     max_comments: int = Field(7, ge=1, le=15)
     categories: set[Literal["bug", "security", "test_gap", "perf"]] = {"bug", "security", "test_gap", "perf"}
     proof_tests: bool = True
+
+    def is_ignored(self, path: str) -> bool:
+        # Leading "/" so "**/migrations/**" also matches a top-level "migrations/x.py"
+        return any(fnmatch(f"/{path}", pattern) for pattern in self.ignore_paths)
 
 
 def load_config(text: str | None) -> RepoConfig:

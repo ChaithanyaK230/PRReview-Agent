@@ -124,3 +124,23 @@ async def test_permission_error_is_fatal(gh):
     respx.get(PULL_URL).respond(403, json={"message": "Resource not accessible by integration"})
     with pytest.raises(FatalError):
         await gh.get_pull(REPO, 7)
+
+
+# ---------- tarball download (Step 18) ----------
+
+@respx.mock
+async def test_tarball_follows_redirect_to_codeload(gh):
+    respx.get(f"{API}/repos/{REPO}/tarball/abc").respond(302, headers={"location": "https://codeload.github.com/x.tar.gz"})
+    codeload = respx.get("https://codeload.github.com/x.tar.gz").respond(200, content=b"TARBYTES")
+    assert await gh.download_tarball(REPO, "abc") == b"TARBYTES"
+    assert "authorization" not in codeload.calls.last.request.headers  # token not leaked to another host
+
+
+@respx.mock
+async def test_huge_tarball_is_refused(gh, monkeypatch):
+    from core.github import client as client_module
+
+    monkeypatch.setattr(client_module, "MAX_TARBALL_BYTES", 4)
+    respx.get(f"{API}/repos/{REPO}/tarball/abc").respond(200, content=b"12345")
+    with pytest.raises(FatalError):
+        await gh.download_tarball(REPO, "abc")

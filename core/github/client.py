@@ -8,6 +8,9 @@ from core.github.app_auth import GITHUB_HEADERS
 
 CHECK_RUN_NAME = "PR Review"
 
+# Repos bigger than this (compressed) aren't reviewed with a sandbox; protects worker memory
+MAX_TARBALL_BYTES = 50 * 1024 * 1024
+
 # Only these conclusions are ever sent: the bot must never block a merge (no "failure")
 ALLOWED_CONCLUSIONS = frozenset({"success", "neutral"})
 
@@ -52,7 +55,7 @@ class GitHubClient:
 
     async def _request(
         self, method: str, path: str, *, accept: str | None = None,
-        json: Any = None, allowed: frozenset[int] = frozenset(),
+        json: Any = None, allowed: frozenset[int] = frozenset(), follow_redirects: bool = False,
     ) -> httpx.Response:
         """Send a request; statuses in `allowed` are returned to the caller instead of raising."""
         token = await self.tokens.get(self.installation_id)
@@ -60,7 +63,10 @@ class GitHubClient:
         if accept:
             headers["Accept"] = accept
         try:
-            resp = await self.http.request(method, path, headers=headers, json=json)
+            # On a redirect to another host (codeload.github.com) httpx drops the Authorization header
+            resp = await self.http.request(
+                method, path, headers=headers, json=json, follow_redirects=follow_redirects,
+            )
         except httpx.TransportError as e:
             raise TransientError(f"{method} {path}: network error: {e}") from e
 
@@ -98,6 +104,20 @@ class GitHubClient:
             accept="application/vnd.github.raw+json", allowed=frozenset({404}),
         )
         return None if resp.status_code == 404 else resp.text
+
+    async def download_tarball(self, repo: str, ref: str) -> bytes:
+        """The repo at `ref` as a .tar.gz with one top-level folder (LLD §8.2).
+
+        The worker downloads it and uploads the bytes to the sandbox, so no GitHub token
+        ever enters the sandbox (LLD §9.2).
+        """
+        resp = await self._request("GET", f"/repos/{repo}/tarball/{ref}", follow_redirects=True)
+        if len(resp.content) > MAX_TARBALL_BYTES:
+            raise FatalError(
+                f"tarball for {repo}@{ref[:7]} is {len(resp.content)} bytes",
+                user_message="This repository is too large to run in the sandbox.",
+            )
+        return resp.content
 
     # ---------- Reviews ----------
 

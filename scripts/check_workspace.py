@@ -12,7 +12,9 @@ from cryptography.fernet import Fernet
 from redis.asyncio import Redis
 
 from core.analysis.config import CONFIG_PATH, load_config
+from core.analysis.delta import compute_delta, failure_signature
 from core.analysis.runners import run_analysis
+from core.github.diffmap import DiffMap
 from core.analysis.workspace import prepare_workspace
 from core.github.app_auth import GITHUB_HEADERS, InstallationTokenCache, make_app_jwt
 from core.github.client import GitHubClient
@@ -46,6 +48,7 @@ async def main(repo: str, number: int) -> None:
             gh.download_tarball(repo, pr.base_sha), gh.download_tarball(repo, pr.head_sha))
         print(f"tarballs: base {len(base_tar)} B, head {len(head_tar)} B  ({ms_since(started)} ms)")
         config = load_config(await gh.get_file(repo, CONFIG_PATH, pr.base_ref))
+        diff = DiffMap.from_diff(await gh.get_diff(repo, number))
 
         started = time.perf_counter()
         async with await E2BSandbox.create(s.e2b_api_key.get_secret_value(), lifetime_s=600) as sbx:
@@ -69,6 +72,20 @@ async def main(repo: str, number: int) -> None:
                     for t in o.tests:
                         first = (t.message or "").strip().splitlines()[-1:] or [""]
                         print(f"      {t.outcome:<7} {t.test_id}  {first[0][:90]}")
+
+            # Step 20: what did THIS PR introduce?
+            delta = compute_delta(analysis.base, analysis.head, diff)
+            print("  DELTA (blamed on this PR):")
+            for f in delta.new_findings:
+                print(f"      new finding    {f.rule} {f.path}:{f.line}  {f.message[:70]}")
+            for c in delta.test_changes:
+                print(f"      {c.kind:<16} {c.test.test_id}  {failure_signature(c.test.message)[:80]}")
+            if not (delta.new_findings or delta.test_changes):
+                print("      (nothing new)")
+            if delta.fixed_tests:
+                print(f"      fixed by this PR: {', '.join(delta.fixed_tests)}")
+            if delta.unavailable:
+                print(f"      not compared (missing evidence): {', '.join(delta.unavailable)}")
         print("sandbox killed")
     await redis.aclose()
 

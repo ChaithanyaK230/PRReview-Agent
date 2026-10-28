@@ -39,3 +39,6 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Real-E2B tests cost money: skipped by default, run with `uv run pytest -m sandbox`
+addopts = "-m 'not sandbox'"
+markers = ["sandbox: runs against a real E2B sandbox"]

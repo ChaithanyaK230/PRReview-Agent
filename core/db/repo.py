@@ -7,8 +7,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.db.models import (
-    TERMINAL_STATES, Base, CandidateComment, Installation, JobState, JobTrigger, PostedComment, Repo,
-    ReviewJob, WebhookEvent,
+    TERMINAL_STATES, Base, CandidateComment, Finding, Installation, JobState, JobTrigger, PostedComment,
+    Repo, ReviewJob, ToolRun, WebhookEvent,
 )
 from core.errors import StateConflict
 
@@ -159,3 +159,19 @@ async def get_posted_hashes(s: AsyncSession, repo_id: int, pr_number: int, exclu
         .where(ReviewJob.repo_id == repo_id, ReviewJob.pr_number == pr_number, ReviewJob.id != exclude_job_id)
     )
     return set((await s.scalars(stmt)).all())
+
+
+# ---------- Tool evidence ----------
+
+async def get_tool_runs(s: AsyncSession, job_id: uuid.UUID) -> list[ToolRun]:
+    return list((await s.scalars(select(ToolRun).where(ToolRun.job_id == job_id))).all())
+
+
+async def get_new_findings(s: AsyncSession, job_id: uuid.UUID) -> list[Finding]:
+    """Findings this job's PR introduced (is_new), for a job resuming after the analyze step."""
+    stmt = (
+        select(Finding)
+        .join(ToolRun, ToolRun.id == Finding.tool_run_id)
+        .where(ToolRun.job_id == job_id, Finding.is_new.is_(True))
+    )
+    return list((await s.scalars(stmt)).all())

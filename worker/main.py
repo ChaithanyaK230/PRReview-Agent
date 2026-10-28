@@ -7,6 +7,7 @@ from core.agent.llm import LLM
 from core.db.session import get_sessionmaker
 from core.github.app_auth import GITHUB_HEADERS, InstallationTokenCache
 from core.github.client import GitHubClient
+from core.sandbox.e2b import E2BSandbox
 from core.settings import get_settings
 from worker.orchestrator import run_review
 
@@ -30,6 +31,10 @@ async def startup(ctx: dict) -> None:
     ctx["sessionmaker"] = get_sessionmaker()
     ctx["gh_for"] = lambda installation_id: GitHubClient(http, tokens, installation_id)
     ctx["llm_for"] = lambda job_id: LLM(llm_client, s.llm_model, job_id)
+    # No E2B key → no sandbox: reviews still run, diff-only, and the summary says so
+    if s.e2b_api_key is not None:
+        e2b_key = s.e2b_api_key.get_secret_value()
+        ctx["sandbox_factory"] = lambda: E2BSandbox.create(e2b_key)
 
 
 async def shutdown(ctx: dict) -> None:

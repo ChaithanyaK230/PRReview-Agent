@@ -155,6 +155,8 @@ class ToolRun(Base):
     exit_code: Mapped[int | None]
     duration_ms: Mapped[int] = mapped_column(default=0)
     timed_out: Mapped[bool] = mapped_column(default=False)
+    # not in LLD: False = the run produced no evidence (crash/timeout), so its side can't be compared
+    available: Mapped[bool] = mapped_column(default=True, server_default=text("true"))
     log_uri: Mapped[str | None] = mapped_column(String(512))
 
 

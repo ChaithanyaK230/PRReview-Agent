@@ -2,12 +2,22 @@ from dataclasses import dataclass, field
 
 from unidiff import PatchSet
 
+from core.analysis.evidence import Evidence
 from core.github.client import PullRequest
 from core.github.diffmap import DiffMap
 
-# Phase 1 context is diff-only. Symbols, callers and tool findings come later (LLD §11).
+# Context = PR text + diff + tool evidence. Symbols and callers come later (LLD §11).
 MAX_DIFF_CHARS = 120_000  # ~30k tokens
 MAX_BODY_CHARS = 2_000
+MAX_TEST_LINES = 60  # per broken test (LLD §11.2)
+MAX_TESTS = 10
+MAX_FINDINGS = 30
+
+CHANGE_LABEL = {
+    "newly_failing": "passed before this PR, fails now",
+    "new_test_failing": "test added by this PR, fails",
+    "failure_changed": "already failed before, but now fails differently",
+}
 
 
 @dataclass(frozen=True)
@@ -55,7 +65,33 @@ def render_diff(diff_text: str, diff: DiffMap) -> tuple[str, list[str]]:
     return "\n\n".join(blocks), skipped
 
 
-def build_context(pr: PullRequest, diff_text: str, diff: DiffMap) -> ReviewContext:
+def render_evidence(evidence: Evidence) -> str:
+    """Tool results in LLD §11.2 priority order: broken tests first, then new findings."""
+    if not evidence.ran:
+        return f"No tool evidence: tests and linters were not run ({evidence.note or 'no sandbox'})."
+    d = evidence.delta
+    body: list[str] = []
+    if d.test_changes:
+        body.append("## Tests broken by this PR")
+        for change in d.test_changes[:MAX_TESTS]:
+            body.append(f"- {change.test.test_id} ({CHANGE_LABEL[change.kind]})")
+            body += ["    " + ln for ln in (change.test.message or "").splitlines()[-MAX_TEST_LINES:]]
+    if d.new_findings:
+        body.append("## New lint findings on lines this PR added")
+        body += [f"- {f.path}:{f.line} {f.tool} {f.rule}: {f.message}" for f in d.new_findings[:MAX_FINDINGS]]
+    if not body:
+        body.append("No new test failures or lint findings.")
+    if d.unavailable:
+        body.append(f"Not compared (no reliable result on one side): {', '.join(sorted(set(d.unavailable)))}")
+    header = ("Results of running this repository's own tests and linters on the base and head commits. "
+              "Pre-existing problems were removed: everything listed was introduced by this PR.")
+    # Test output can contain text the PR author controls, so it is untrusted like the PR body
+    return f"{header}\n{_untrusted('tool_output', chr(10).join(body))}"
+
+
+def build_context(
+    pr: PullRequest, diff_text: str, diff: DiffMap, evidence: Evidence | None = None
+) -> ReviewContext:
     rendered, skipped = render_diff(diff_text, diff)
     if not rendered:
         return ReviewContext(text="", skipped_files=skipped)
@@ -67,4 +103,6 @@ def build_context(pr: PullRequest, diff_text: str, diff: DiffMap) -> ReviewConte
     ]
     if skipped:
         parts.append(f"(Not shown, too large: {', '.join(skipped)})")
+    if evidence is not None:
+        parts.append(render_evidence(evidence))
     return ReviewContext(text="\n\n".join(parts), skipped_files=skipped)

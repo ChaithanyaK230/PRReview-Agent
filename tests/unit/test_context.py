@@ -40,3 +40,46 @@ def test_pr_body_cannot_close_the_delimiter():
 
 def test_empty_diff_gives_empty_context():
     assert build_context(pr(), "", DiffMap.from_diff("")).empty
+
+
+# ---------- tool evidence (Step 21) ----------
+
+from core.analysis.delta import Delta, TestChange  # noqa: E402
+from core.analysis.evidence import Evidence  # noqa: E402
+from core.analysis.models import Finding, TestResult  # noqa: E402
+
+
+def broken(message):
+    return TestChange("newly_failing", TestResult(test_id="t.py::test_a", outcome="failed", message=message))
+
+
+def test_evidence_is_included_and_untrusted():
+    evidence = Evidence(ran=True, delta=Delta(
+        new_findings=[Finding(tool="ruff", rule="F821", path="app.py", line=2, severity="error",
+                              message="Undefined name `c`")],
+        test_changes=[broken("E   assert -1 == 5")],
+    ))
+    text = build_context(pr(), DIFF, DiffMap.from_diff(DIFF), evidence).text
+    assert "<untrusted_tool_output>" in text
+    assert "- t.py::test_a (passed before this PR, fails now)" in text
+    assert "- app.py:2 ruff F821: Undefined name `c`" in text
+    assert text.index("## Tests broken") < text.index("## New lint findings")  # LLD priority order
+
+
+def test_long_test_output_is_trimmed_to_last_60_lines():
+    message = "\n".join(f"line {i}" for i in range(200))
+    text = build_context(pr(), DIFF, DiffMap.from_diff(DIFF), Evidence(ran=True, delta=Delta(test_changes=[broken(message)]))).text
+    assert "line 199" in text and "line 139" not in text
+
+
+def test_no_sandbox_is_stated_plainly():
+    text = build_context(pr(), DIFF, DiffMap.from_diff(DIFF), Evidence(ran=False, note="sandbox unavailable")).text
+    assert "No tool evidence: tests and linters were not run (sandbox unavailable)." in text
+
+
+def test_summary_line():
+    assert Evidence(ran=False, note="x").summary_line().startswith("Diff-only review")
+    line = Evidence(ran=True, delta=Delta(test_changes=[broken("E x")], fixed_tests=["t.py::b"],
+                                          unavailable=["pytest"])).summary_line()
+    assert line == ("Tests and linters ran on base and head: 1 test broken by this PR, 0 new lint findings, "
+                    "1 fixed. Not compared (no reliable result on one side): pytest.")

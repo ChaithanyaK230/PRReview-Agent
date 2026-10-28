@@ -10,6 +10,12 @@ import structlog
 
 from core.agent.drafter import draft_comments
 from core.agent.schemas import CandidateComment
+from core.analysis.config import CONFIG_PATH, RepoConfig, load_config
+from core.analysis.delta import Delta, TestChange, compute_delta
+from core.analysis.evidence import Evidence
+from core.analysis.models import Finding, TestResult
+from core.analysis.runners import Analysis, run_analysis
+from core.analysis.workspace import Workspace, prepare_workspace
 from core.context.builder import build_context
 from core.cost import CostMeter
 from core.critics.anchor import check_anchor
@@ -22,6 +28,7 @@ from core.github.publisher import (
     SUMMARY_MARKER, ReviewAPI, check_run_title, publish_review, render_summary,
 )
 from core.ranking import select
+from core.sandbox.base import Sandbox
 from core.settings import get_settings
 
 log = structlog.get_logger()
@@ -34,6 +41,7 @@ class GitHubAPI(ReviewAPI, Protocol):
     async def get_pull(self, repo: str, number: int) -> PullRequest: ...
     async def get_diff(self, repo: str, number: int) -> str: ...
     async def get_file(self, repo: str, path: str, ref: str) -> str | None: ...
+    async def download_tarball(self, repo: str, ref: str) -> bytes: ...
     async def upsert_issue_comment(self, repo: str, number: int, marker: str, body: str, bot_login: str) -> int: ...
     async def create_check_run(self, repo: str, head_sha: str, title: str) -> int: ...
     async def complete_check_run(self, repo: str, check_run_id: int, conclusion: str, title: str,
@@ -64,6 +72,14 @@ class JobRuntime:
     diff_text: str = ""
     diff: DiffMap | None = None
     config_text: str | None = None
+    config: RepoConfig = field(default_factory=RepoConfig)
+    # Sandbox (Phase 2). Never persisted: a resumed job builds a new one if it still needs it (LLD §7.2)
+    sandbox_factory: Callable[[], Awaitable[Sandbox]] | None = None
+    sandbox: Sandbox | None = None
+    workspace: Workspace | None = None
+    sandbox_note: str = ""  # set when we gave up on the sandbox -> diff-only review
+    # Filled by analyze; rebuilt from tool_runs/findings rows if the job resumes later
+    evidence: Evidence | None = None
     # Filled by draft; loaded from the DB if the job resumes at REFLECTING or later
     candidates: list[models.CandidateComment] = field(default_factory=list)
 
@@ -87,24 +103,108 @@ async def fetch(rt: JobRuntime) -> None:
     rt.diff_text = await rt.gh.get_diff(rt.repo_full_name, rt.pr_number)
     rt.diff = DiffMap.from_diff(rt.diff_text)
     # Config always from the BASE branch, so a PR can't weaken its own review (LLD §10.1)
-    rt.config_text = await rt.gh.get_file(rt.repo_full_name, ".prreview.yml", rt.pr.base_ref)
+    rt.config_text = await rt.gh.get_file(rt.repo_full_name, CONFIG_PATH, rt.pr.base_ref)
+    rt.config = load_config(rt.config_text)  # invalid config -> FatalError, shown on the Check Run (LLD §7.4)
     log.info("job.fetched", job_id=str(rt.job_id), files=len(rt.diff.right), has_config=rt.config_text is not None)
 
 
+async def ensure_workspace(rt: JobRuntime) -> None:
+    """Sandbox with base + head installed and internet off. Falls back to diff-only instead of failing."""
+    if rt.workspace is not None or rt.sandbox_note:
+        return
+    if rt.sandbox_factory is None:
+        rt.sandbox_note = "no sandbox configured"
+        return
+    await rt.ensure_fetched()
+    assert rt.pr is not None
+    last_error: Exception | None = None
+    for _ in range(2):  # LLD §11: retry sandbox setup once, then review without it
+        try:
+            base_tar, head_tar = await asyncio.gather(
+                rt.gh.download_tarball(rt.repo_full_name, rt.pr.base_sha),
+                rt.gh.download_tarball(rt.repo_full_name, rt.head_sha),
+            )
+            rt.sandbox = await rt.sandbox_factory()
+            rt.workspace = await prepare_workspace(rt.sandbox, base_tar, head_tar, rt.config)
+            return
+        except (TransientError, FatalError) as e:
+            last_error = e
+            if rt.sandbox is not None:
+                await rt.sandbox.close()
+                rt.sandbox = None
+    rt.sandbox_note = "sandbox unavailable"
+    log.warning("job.sandbox_fallback", job_id=str(rt.job_id), error=str(last_error))
+
+
 async def prepare_sandbox(rt: JobRuntime) -> None:
-    pass  # Phase 2: E2B sandbox
+    await ensure_workspace(rt)
+
+
+def evidence_rows(job_id: uuid.UUID, analysis: Analysis, delta: Delta) -> list[Base]:
+    """tool_runs for every tool on both sides, plus findings rows for what this PR introduced.
+
+    Only new problems are stored (is_new=True), not every pre-existing warning: big repos have thousands.
+    A broken test is stored as a pytest finding: rule = change kind, path = test id.
+    """
+    rows: list[Base] = []
+    head_run_ids: dict[str, uuid.UUID] = {}
+    for o in [*analysis.base, *analysis.head]:
+        run = models.ToolRun(id=uuid.uuid4(), job_id=job_id, tool=o.tool, side=o.side, exit_code=o.exit_code,
+                             duration_ms=o.duration_ms, timed_out=o.timed_out, available=o.available)
+        rows.append(run)
+        if o.side == "head":
+            head_run_ids[o.tool] = run.id
+    for f in delta.new_findings:
+        rows.append(models.Finding(tool_run_id=head_run_ids[f.tool], fingerprint=f.fingerprint, rule=f.rule,
+                                   path=f.path, line=f.line, severity=f.severity, message=f.message, is_new=True))
+    for c in delta.test_changes:
+        rows.append(models.Finding(tool_run_id=head_run_ids["pytest"], fingerprint="", rule=c.kind,
+                                   path=c.test.test_id, line=0, severity="error",
+                                   message=c.test.message or "", is_new=True))
+    return rows
+
+
+def evidence_from_rows(runs: list[models.ToolRun], findings: list[models.Finding]) -> Evidence:
+    """Rebuild Evidence for a job resuming after analyze, without re-running the sandbox."""
+    if not runs:
+        return Evidence(ran=False, note="sandbox unavailable")
+    available = {(r.tool, r.side): r.available for r in runs}
+    unavailable = [tool for (tool, side), ok in available.items()
+                   if side == "head" and not (ok and available.get((tool, "base"), False))]
+    run_tool = {r.id: r.tool for r in runs}
+    new_findings, changes = [], []
+    for f in findings:
+        if run_tool[f.tool_run_id] == "pytest":
+            changes.append(TestChange(f.rule, TestResult(test_id=f.path, outcome="failed", message=f.message)))
+        else:
+            new_findings.append(Finding(tool=run_tool[f.tool_run_id], rule=f.rule, path=f.path, line=f.line,
+                                        severity=f.severity, message=f.message, fingerprint=f.fingerprint))
+    return Evidence(ran=True, delta=Delta(new_findings, changes, [], unavailable))
 
 
 async def analyze(rt: JobRuntime) -> None:
-    pass  # Phase 2: lint/tests on base and head
+    await ensure_workspace(rt)
+    if rt.sandbox is None or rt.workspace is None:
+        rt.evidence = Evidence(ran=False, note=rt.sandbox_note)
+        return
+    assert rt.diff is not None
+    analysis = await run_analysis(rt.sandbox, rt.workspace, rt.config)
+    if not analysis.head:  # nothing could run, e.g. a language we don't support yet
+        rt.evidence = Evidence(ran=False, note=rt.workspace.head.log or "no tools ran")
+        return
+    delta = compute_delta(analysis.base, analysis.head, rt.diff)
+    rt.evidence = Evidence(ran=True, delta=delta)
+    rt.pending_writes += evidence_rows(rt.job_id, analysis, delta)
+    log.info("job.analyzed", job_id=str(rt.job_id), new_findings=len(delta.new_findings),
+             broken_tests=len(delta.test_changes), unavailable=delta.unavailable)
 
 
 async def draft(rt: JobRuntime) -> None:
     await rt.ensure_fetched()
     assert rt.pr is not None and rt.diff is not None
-    context = build_context(rt.pr, rt.diff_text, rt.diff)
-    # TODO: categories from .prreview.yml once RepoConfig exists (LLD §10.1)
-    comments = [] if context.empty else await draft_comments(rt.llm, rt.cost, context.text)
+    context = build_context(rt.pr, rt.diff_text, rt.diff, rt.evidence)
+    categories = frozenset(rt.config.categories)
+    comments = [] if context.empty else await draft_comments(rt.llm, rt.cost, context.text, categories)
     rt.pending_writes += rt.llm.drain_records()
     rt.candidates = [
         models.CandidateComment(
@@ -143,12 +243,14 @@ async def publish(rt: JobRuntime) -> None:
         for c in rt.candidates
         if c.final_status in (CandidateStatus.ACCEPTED, CandidateStatus.VERIFIED)
     ]
-    ranked = select(accepted, rt.posted_hashes, settings.max_comments)
+    ranked = select(accepted, rt.posted_hashes, rt.config.max_comments)
 
     result = await publish_review(
         rt.gh, rt.repo_full_name, rt.pr_number, rt.head_sha, ranked, settings.bot_login
     )
-    summary = render_summary(rt.head_sha, ranked, dropped=len(rt.candidates) - len(ranked))
+    evidence = rt.evidence or Evidence(ran=False, note="not recorded")
+    summary = render_summary(rt.head_sha, ranked, dropped=len(rt.candidates) - len(ranked),
+                             evidence_note=evidence.summary_line())
     summary_id = await rt.gh.upsert_issue_comment(
         rt.repo_full_name, rt.pr_number, SUMMARY_MARKER, summary, settings.bot_login
     )
@@ -234,6 +336,11 @@ async def run_review(ctx: dict, job_id: str) -> None:
             if job.state in (JobState.REFLECTING, JobState.PUBLISHING) else []
         )
         posted_hashes = await repo.get_posted_hashes(s, job.repo_id, job.pr_number, exclude_job_id=job.id)
+        # Resuming after the analyze step: rebuild its evidence from the DB instead of re-running tools
+        resumed_evidence = (
+            evidence_from_rows(await repo.get_tool_runs(s, job.id), await repo.get_new_findings(s, job.id))
+            if job.state in (JobState.DRAFTED, JobState.REFLECTING, JobState.PUBLISHING) else None
+        )
 
     cost = CostMeter(get_settings().job_budget_usd)
     cost.add(job.cost_usd)  # spend from before a resume still counts toward the cap
@@ -246,6 +353,8 @@ async def run_review(ctx: dict, job_id: str) -> None:
         check_run_id=job.check_run_id,
         posted_hashes=posted_hashes,
         candidates=resumed_candidates,
+        evidence=resumed_evidence,
+        sandbox_factory=ctx.get("sandbox_factory"),
     )
     log.info("job.run", job_id=job_id, repo=rt.repo_full_name, pr=rt.pr_number, resume_from=rt.state)
 
@@ -279,3 +388,7 @@ async def run_review(ctx: dict, job_id: str) -> None:
         await close_check_run(rt, "Review could not complete", e.user_message)
     except StateConflict:
         log.warning("job.conflict", job_id=job_id)  # another worker already moved this job
+    finally:
+        # Always, on success, failure, cancel or crash: a live sandbox bills per second (LLD §7.3)
+        if rt.sandbox is not None:
+            await rt.sandbox.close()

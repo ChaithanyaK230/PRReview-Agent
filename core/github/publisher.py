@@ -87,7 +87,10 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def render_summary(head_sha: str, posted: list[Ranked], dropped: int) -> str:
+DIFF_ONLY_NOTE = "Diff-only review: tests and linters were not run on this push."
+
+
+def render_summary(head_sha: str, posted: list[Ranked], dropped: int, evidence_note: str = DIFF_ONLY_NOTE) -> str:
     """The one summary comment per PR, edited in place on every push (LLD §15.4)."""
     lines = [SUMMARY_MARKER, f"### PR review · `{head_sha[:7]}`"]
     if not posted:
@@ -105,7 +108,7 @@ def render_summary(head_sha: str, posted: list[Ranked], dropped: int) -> str:
         ]
     if dropped:
         lines.append(f"\n<sub>{dropped} draft comment(s) were dropped by checks or as duplicates.</sub>")
-    lines.append("\n<sub>Diff-only review: tests and linters were not run on this push.</sub>")
+    lines.append(f"\n<sub>{evidence_note}</sub>")
     return "\n".join(lines)
 
 

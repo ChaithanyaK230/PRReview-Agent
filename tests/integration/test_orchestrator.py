@@ -73,6 +73,9 @@ class FakeGitHub:
     async def get_file(self, repo_name, path, ref):
         return None
 
+    async def download_tarball(self, repo_name, ref):
+        return f"tarball-{ref[:1]}".encode()
+
 
 class FakeLLM:
     """Answers the first draft call with `comments`, later ones with nothing; records one call each."""
@@ -82,9 +85,11 @@ class FakeLLM:
         self.calls = 0
         self.records = []
         self.job_id = None
+        self.prompts = []  # the user message of every call: what the model was shown
 
     async def structured(self, purpose, system, user, schema, meter, max_tokens=4000):
         self.calls += 1
+        self.prompts.append(user)
         self.records.append(LLMCall(job_id=self.job_id, purpose=purpose, model="fake",
                                     input_tokens=10, output_tokens=5, cost_usd=0))
         return schema.model_validate({"comments": self.comments if self.calls == 1 else []})
@@ -115,7 +120,7 @@ async def seed(session) -> str:
     return str(job.id)
 
 
-async def run(sessionmaker, gh, redis, job_id, llm=None):
+async def run(sessionmaker, gh, redis, job_id, llm=None, sandbox_factory=None):
     llm = llm or FakeLLM()
 
     def llm_for(jid):
@@ -123,6 +128,8 @@ async def run(sessionmaker, gh, redis, job_id, llm=None):
         return llm
 
     ctx = {"sessionmaker": sessionmaker, "redis": redis, "gh_for": lambda _: gh, "llm_for": llm_for}
+    if sandbox_factory is not None:
+        ctx["sandbox_factory"] = sandbox_factory
     await run_review(ctx, job_id)
 
 
@@ -255,3 +262,108 @@ async def test_issue_posted_by_earlier_push_is_not_reposted(session, sessionmake
     await run(sessionmaker, gh, FakeRedis(latest="c" * 40), str(job.id), llm=FakeLLM([comment(2)]))
     assert gh.created_reviews == []
     assert "No issues found" in gh.issue_comments[0][1]
+
+
+# ---------- Phase 2: sandbox + analysis (Step 21) ----------
+
+from core.analysis.runners.pytest import OUT_DIR  # noqa: E402
+from tests.fakes import FakeSandbox  # noqa: E402
+
+
+def junit(outcome_xml):
+    return ('<testsuites><testsuite><testcase classname="test_app" name="test_add" file="test_app.py">'
+            f'{outcome_xml}</testcase></testsuite></testsuites>').encode()
+
+
+def sandbox_where_pr_breaks_a_test():
+    sbx = FakeSandbox()
+    sbx.files[f"{OUT_DIR}/base-junit.xml"] = junit("")  # passed before the PR
+    sbx.files[f"{OUT_DIR}/head-junit.xml"] = junit(
+        '<failure message="assert 3 == 5">E       assert add(2, 3) == 5\nE       assert -1 == 5</failure>')
+    return sbx
+
+
+async def test_broken_test_reaches_the_ai_and_the_summary(session, sessionmaker):
+    from sqlalchemy import select
+
+    from core.db.models import Finding, ToolRun
+
+    job_id = await seed(session)
+    sbx = sandbox_where_pr_breaks_a_test()
+    gh, llm = FakeGitHub(), FakeLLM()
+
+    async def factory():
+        return sbx
+
+    await run(sessionmaker, gh, FakeRedis(), job_id, llm=llm, sandbox_factory=factory)
+
+    # the model was shown the evidence
+    assert "## Tests broken by this PR" in llm.prompts[0]
+    assert "test_app.py::test_add (passed before this PR, fails now)" in llm.prompts[0]
+    # the summary tells humans what ran
+    assert "1 test broken by this PR" in gh.issue_comments[0][1]
+    # evidence was saved, and the sandbox was cleaned up and left offline
+    async with session.begin():
+        runs = (await session.scalars(select(ToolRun))).all()
+        findings = (await session.scalars(select(Finding))).all()
+    assert sorted((r.tool, r.side) for r in runs) == [("pytest", "base"), ("pytest", "head"),
+                                                      ("ruff", "base"), ("ruff", "head")]
+    assert [(f.rule, f.path) for f in findings] == [("newly_failing", "test_app.py::test_add")]
+    assert sbx.closed and sbx.network is False
+    assert (await load(session, job_id)).state == JobState.DONE
+
+
+async def test_sandbox_outage_falls_back_to_diff_only(session, sessionmaker):
+    job_id = await seed(session)
+    gh, llm = FakeGitHub(), FakeLLM()
+    attempts = []
+
+    async def broken_factory():
+        attempts.append(1)
+        raise TransientError("E2B is down")
+
+    await run(sessionmaker, gh, FakeRedis(), job_id, llm=llm, sandbox_factory=broken_factory)
+    assert len(attempts) == 2  # retried once, then gave up on the sandbox, not on the review
+    assert "No tool evidence" in llm.prompts[0]
+    assert "Diff-only review" in gh.issue_comments[0][1]
+    assert (await load(session, job_id)).state == JobState.DONE
+
+
+async def test_resume_after_analyze_reuses_saved_evidence(session, sessionmaker):
+    job_id = await seed(session)
+    sbx = sandbox_where_pr_breaks_a_test()
+
+    class CrashOnce(FakeLLM):
+        async def structured(self, *args, **kwargs):
+            raise RuntimeError("worker killed mid-draft")  # not one of our errors: arq would retry the job
+
+    async def factory():
+        return sbx
+
+    try:
+        await run(sessionmaker, FakeGitHub(), FakeRedis(), job_id, llm=CrashOnce(), sandbox_factory=factory)
+    except RuntimeError:
+        pass
+    assert (await load(session, job_id)).state == JobState.DRAFTED
+    assert sbx.closed  # even a crash cleans up the sandbox
+
+    async def must_not_be_called():
+        raise AssertionError("a resumed job must not rebuild the sandbox just for the draft step")
+
+    llm = FakeLLM()
+    await run(sessionmaker, FakeGitHub(), FakeRedis(), job_id, llm=llm, sandbox_factory=must_not_be_called)
+    assert "test_app.py::test_add" in llm.prompts[0]  # evidence rebuilt from the DB
+    assert (await load(session, job_id)).state == JobState.DONE
+
+
+async def test_invalid_repo_config_fails_with_a_clear_message(session, sessionmaker):
+    class BadConfig(FakeGitHub):
+        async def get_file(self, repo_name, path, ref):
+            return "max_comment: 3\n"  # typo: should be max_comments
+
+    job_id = await seed(session)
+    gh = BadConfig()
+    await run(sessionmaker, gh, FakeRedis(), job_id)
+    job = await load(session, job_id)
+    assert job.state == JobState.FAILED
+    assert gh.check_runs[-1][:2] == ("complete", "neutral")

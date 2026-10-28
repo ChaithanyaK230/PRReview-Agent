@@ -1,3 +1,4 @@
+import shlex
 import time
 from dataclasses import dataclass
 
@@ -5,6 +6,7 @@ import structlog
 
 from core.analysis.config import RepoConfig
 from core.analysis.detect import TOOL_PACKAGES, TOOLS_DIR, Toolchain, detect, venv_python
+from core.errors import TransientError
 from core.sandbox.base import WORK_ROOT, Sandbox
 
 log = structlog.get_logger()
@@ -23,10 +25,12 @@ class SideSetup:
     installed: bool
     log: str  # tail of install output, for the trace viewer
     duration_ms: int
+    # A scratch copy of head (critics) has no .venv of its own: it borrows head's interpreter
+    python_override: str | None = None
 
     @property
     def python(self) -> str:
-        return venv_python(self.root)
+        return self.python_override or venv_python(self.root)
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,14 @@ async def _setup_side(
     ms = int((time.perf_counter() - started) * 1000)
     log.info("workspace.side", side=side, strategy=toolchain.strategy, installed=installed, ms=ms)
     return SideSetup(side, root, toolchain, installed, output, ms)
+
+
+async def copy_tree(sbx: Sandbox, src: str, dst: str) -> None:
+    """Copy src to dst inside the sandbox, without .venv (hundreds of MB; the copy borrows src's)."""
+    script = f"rm -rf {shlex.quote(dst)} && mkdir -p {shlex.quote(dst)} && "              f"tar -C {shlex.quote(src)} --exclude=./.venv -cf - . | tar -C {shlex.quote(dst)} -xf -"
+    result = await sbx.exec(["bash", "-c", script], cwd="/", timeout_s=120)
+    if not result.ok:
+        raise TransientError(f"copying {src} to {dst} failed: {result.stderr[-300:]}")
 
 
 async def prepare_workspace(sbx: Sandbox, base_tar: bytes, head_tar: bytes, config: RepoConfig) -> Workspace:

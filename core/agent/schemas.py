@@ -23,3 +23,11 @@ class CandidateComment(BaseModel):
 
 class DraftResponse(BaseModel):
     comments: list[CandidateComment] = Field(default_factory=list, max_length=15)
+
+
+class ReviseResponse(BaseModel):
+    """The reviser's answer to failed critics (LLD §12.1): a corrected comment, or drop it."""
+
+    action: Literal["revise", "drop"]
+    comment: CandidateComment | None = None
+    reason: str = Field(max_length=500)

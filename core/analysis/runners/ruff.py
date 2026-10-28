@@ -4,7 +4,7 @@ from core.analysis.config import RepoConfig
 from core.analysis.detect import TOOLS_DIR
 from core.analysis.models import Finding, ToolOutcome
 from core.analysis.workspace import SideSetup
-from core.sandbox.base import Sandbox
+from core.sandbox.base import ExecResult, Sandbox
 
 RUFF = f"{TOOLS_DIR}/bin/ruff"
 TOOL_TIMEOUT_S = 360  # LLD §17: tools per side
@@ -41,11 +41,15 @@ def parse_ruff(output: str, root: str) -> list[Finding]:
     return findings
 
 
-async def run_ruff(sbx: Sandbox, side: SideSetup, config: RepoConfig) -> ToolOutcome:
+async def ruff_check(sbx: Sandbox, root: str, paths: list[str]) -> ExecResult:
     # --exit-zero: findings don't change the exit code, so non-zero always means ruff itself failed.
     # The repo's own ruff config (pyproject.toml / ruff.toml) is picked up automatically from cwd.
-    result = await sbx.exec([RUFF, "check", "--output-format", "json", "--exit-zero", "--no-cache", "."],
-                            cwd=side.root, timeout_s=TOOL_TIMEOUT_S)
+    return await sbx.exec([RUFF, "check", "--output-format", "json", "--exit-zero", "--no-cache", *paths],
+                          cwd=root, timeout_s=TOOL_TIMEOUT_S)
+
+
+async def run_ruff(sbx: Sandbox, side: SideSetup, config: RepoConfig) -> ToolOutcome:
+    result = await ruff_check(sbx, side.root, ["."])
 
     def outcome(available: bool, findings: list[Finding] | None = None, log: str = "") -> ToolOutcome:
         return ToolOutcome("ruff", side.side, result.exit_code, result.duration_ms, result.timed_out,

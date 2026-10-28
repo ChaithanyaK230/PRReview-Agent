@@ -56,7 +56,9 @@ def parse_junit(xml_text: str) -> list[TestResult]:
     return results
 
 
-async def run_pytest(sbx: Sandbox, side: SideSetup, config: RepoConfig) -> ToolOutcome:
+async def run_pytest(
+    sbx: Sandbox, side: SideSetup, config: RepoConfig, env: dict[str, str] | None = None
+) -> ToolOutcome:
     report = f"{OUT_DIR}/{side.side}-junit.xml"
     await sbx.exec(["mkdir", "-p", OUT_DIR], cwd="/", timeout_s=30)
     await sbx.exec(["rm", "-f", report], cwd="/", timeout_s=30)  # never read a stale report
@@ -65,7 +67,7 @@ async def run_pytest(sbx: Sandbox, side: SideSetup, config: RepoConfig) -> ToolO
         side.python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
         "--continue-on-collection-errors",  # one broken test file must not hide every other result
         f"--junitxml={report}", "-o", "junit_family=xunit1",
-    ], cwd=side.root, timeout_s=config.test_timeout_s)
+    ], cwd=side.root, timeout_s=config.test_timeout_s, env=env)
 
     def outcome(available: bool, tests: list[TestResult] | None = None, log: str = "") -> ToolOutcome:
         return ToolOutcome("pytest", side.side, result.exit_code, result.duration_ms, result.timed_out,

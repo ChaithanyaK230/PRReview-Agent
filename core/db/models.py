@@ -183,6 +183,8 @@ class CandidateComment(Base):
     iterations: Mapped[int] = mapped_column(default=0)
     final_status: Mapped[CandidateStatus] = mapped_column(_enum(CandidateStatus), default=CandidateStatus.PENDING)
     verified: Mapped[bool] = mapped_column(default=False)
+    # not in LLD: the suggested fix applied and kept passing tests green → may be a one-click suggestion
+    patch_verified: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     score: Mapped[float | None]
 
 

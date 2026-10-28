@@ -7,6 +7,7 @@ from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
 from core.agent.schemas import CandidateComment
+from core.critics.patching import PatchError, normalize_patch
 from core.errors import ReviewRejected
 from core.ranking import Ranked
 
@@ -42,8 +43,9 @@ def suggestion_text(c: CandidateComment) -> str | None:
     if not c.suggested_patch:
         return None
     try:
-        patch = PatchSet.from_string(c.suggested_patch)
-    except UnidiffParseError:
+        # Normalizing adds the ---/+++ headers LLMs often omit (the Phase 1 one-click bug)
+        patch = PatchSet.from_string(normalize_patch(c.suggested_patch, c.path))
+    except (UnidiffParseError, PatchError):
         return None
     if len(patch) != 1 or len(patch[0]) != 1:
         return None
@@ -56,26 +58,31 @@ def suggestion_text(c: CandidateComment) -> str | None:
     return "".join(line.value for line in hunk if not line.is_removed)
 
 
-def render_comment(c: CandidateComment, candidate_id: uuid.UUID, verified: bool) -> str:
+def render_comment(
+    c: CandidateComment, candidate_id: uuid.UUID, verified: bool, patch_verified: bool = False
+) -> str:
     label = f"{'✅ Verified ' if verified else ''}{CATEGORY_LABEL[c.category]} · {c.severity}"
     parts = [f"{SEVERITY_ICON[c.severity]} **{label}**: {c.claim}", c.body]
-    suggestion = suggestion_text(c)
+    suggestion = suggestion_text(c) if patch_verified else None
     if suggestion is not None:
+        # One-click "Commit suggestion" only for fixes that applied and kept passing tests green (HLD G3)
         parts.append(f"```suggestion\n{suggestion}```")
+        parts.append("<sub>✔ This fix was applied in a sandbox: it passes lint and keeps passing tests green.</sub>")
     elif c.suggested_patch:
-        # Phase 1 patches are not applied or tested yet, so they are never offered as one-click fixes
+        status = "applies cleanly; lint and tests pass" if patch_verified else "not verified"
         parts.append(
-            "<details><summary>Suggested fix (not yet verified)</summary>\n\n"
+            f"<details><summary>Suggested fix ({status})</summary>\n\n"
             f"```diff\n{c.suggested_patch.strip()}\n```\n</details>"
         )
     parts.append(candidate_marker(candidate_id))
     return "\n\n".join(parts)
 
 
-def review_comment_payload(r: Ranked) -> dict[str, Any]:
+def review_comment_payload(r: Ranked, patch_verified: bool = False) -> dict[str, Any]:
     c = r.comment
     payload: dict[str, Any] = {
-        "path": c.path, "line": c.line, "side": c.side, "body": render_comment(c, r.candidate_id, r.verified),
+        "path": c.path, "line": c.line, "side": c.side,
+        "body": render_comment(c, r.candidate_id, r.verified, patch_verified),
     }
     if c.start_line is not None:
         payload["start_line"] = c.start_line
@@ -131,7 +138,8 @@ class PublishResult:
 
 
 async def publish_review(
-    gh: ReviewAPI, repo: str, number: int, head_sha: str, ranked: list[Ranked], bot_login: str
+    gh: ReviewAPI, repo: str, number: int, head_sha: str, ranked: list[Ranked], bot_login: str,
+    patch_verified_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> PublishResult:
     if not ranked:
         return PublishResult(review_id=None)
@@ -148,13 +156,15 @@ async def publish_review(
     else:
         try:
             review_id = await gh.create_review(
-                repo, number, head_sha, "", [review_comment_payload(r) for r in ranked]
+                repo, number, head_sha, "",
+                [review_comment_payload(r, r.candidate_id in patch_verified_ids) for r in ranked],
             )
         except ReviewRejected as e:
             # Fallback: same comments in the review body, so nothing is lost if one anchor is invalid
             log.warning("publish.inline_rejected", error=str(e))
             body = "\n\n---\n\n".join(
-                f"`{r.comment.path}:{r.comment.line}`\n\n{render_comment(r.comment, r.candidate_id, r.verified)}"
+                f"`{r.comment.path}:{r.comment.line}`\n\n"
+                f"{render_comment(r.comment, r.candidate_id, r.verified, r.candidate_id in patch_verified_ids)}"
                 for r in ranked
             )
             review_id = await gh.create_review(repo, number, head_sha, body, [])

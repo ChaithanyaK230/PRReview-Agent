@@ -26,15 +26,30 @@ def cc(**kw):
 
 # ---------- rendering ----------
 
-def test_exact_patch_becomes_one_click_suggestion():
-    body = render_comment(cc(suggested_patch=EXACT_FIX), CID, verified=False)
+def test_verified_exact_patch_becomes_one_click_suggestion():
+    body = render_comment(cc(suggested_patch=EXACT_FIX), CID, verified=False, patch_verified=True)
     assert "```suggestion\n    return a + b\n```" in body
+    assert "passes lint and keeps passing tests green" in body
 
 
-def test_patch_touching_other_lines_is_shown_as_unverified_diff():
-    body = render_comment(cc(line=9, suggested_patch=EXACT_FIX), CID, verified=False)
+def test_unverified_patch_is_never_one_click():
+    # HLD G3: only fixes proven in the sandbox get a "Commit suggestion" button
+    body = render_comment(cc(suggested_patch=EXACT_FIX), CID, verified=False)
     assert "```suggestion" not in body
-    assert "Suggested fix (not yet verified)" in body
+    assert "Suggested fix (not verified)" in body
+
+
+def test_verified_patch_touching_other_lines_is_shown_as_diff():
+    body = render_comment(cc(line=9, suggested_patch=EXACT_FIX), CID, verified=False, patch_verified=True)
+    assert "```suggestion" not in body
+    assert "Suggested fix (applies cleanly; lint and tests pass)" in body
+
+
+def test_patch_without_headers_can_still_be_one_click():
+    """The Phase 1 bug: DeepSeek omitted ---/+++ headers, so no suggestion button appeared."""
+    headerless = "@@ -4,1 +4,1 @@\n-    return a - b\n+    return a + b\n"
+    body = render_comment(cc(suggested_patch=headerless), CID, verified=False, patch_verified=True)
+    assert "```suggestion\n    return a + b\n```" in body
 
 
 def test_garbage_patch_does_not_crash():

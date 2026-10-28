@@ -18,7 +18,9 @@ from core.analysis.runners import Analysis, run_analysis
 from core.analysis.workspace import Workspace, prepare_workspace
 from core.context.builder import build_context
 from core.cost import CostMeter
-from core.critics.anchor import check_anchor
+from core.agent.reviser import Reviser
+from core.critics.base import CriticContext
+from core.critics.engine import reflect_all
 from core.db import models, repo
 from core.db.models import TERMINAL_STATES, Base, CandidateStatus, JobState
 from core.errors import BudgetExceeded, CancelledJob, FatalError, StateConflict, TransientError
@@ -80,6 +82,7 @@ class JobRuntime:
     sandbox_note: str = ""  # set when we gave up on the sandbox -> diff-only review
     # Filled by analyze; rebuilt from tool_runs/findings rows if the job resumes later
     evidence: Evidence | None = None
+    analysis: Analysis | None = None  # raw tool results; memory only (critics re-run tests if resumed)
     # Filled by draft; loaded from the DB if the job resumes at REFLECTING or later
     candidates: list[models.CandidateComment] = field(default_factory=list)
 
@@ -194,6 +197,7 @@ async def analyze(rt: JobRuntime) -> None:
         return
     delta = compute_delta(analysis.base, analysis.head, rt.diff)
     rt.evidence = Evidence(ran=True, delta=delta)
+    rt.analysis = analysis  # kept in memory: patch_tests compares against head's passing tests
     rt.pending_writes += evidence_rows(rt.job_id, analysis, delta)
     log.info("job.analyzed", job_id=str(rt.job_id), new_findings=len(delta.new_findings),
              broken_tests=len(delta.test_changes), unavailable=delta.unavailable)
@@ -217,23 +221,50 @@ async def draft(rt: JobRuntime) -> None:
 
 
 async def reflect(rt: JobRuntime) -> None:
-    # Phase 1 runs only the anchor critic; the full critic chain and reviser come in Phase 3 (LLD §13)
+    """Critics check every draft; failures go to the reviser; max_iterations rounds (LLD §13.3)."""
     await rt.ensure_fetched()
-    assert rt.diff is not None
-    for cand in rt.candidates:
-        if cand.final_status != CandidateStatus.PENDING:
-            continue
-        comment, verdict = check_anchor(CandidateComment.model_validate(cand.payload), rt.diff)
-        rt.pending_writes.append(models.CriticResult(
-            candidate_id=cand.id, iteration=0, critic=verdict.critic,
-            passed=verdict.passed, feedback=verdict.feedback, duration_ms=verdict.duration_ms,
-        ))
-        cand.payload = comment.model_dump()
-        cand.iterations = 1
-        cand.final_status = CandidateStatus.ACCEPTED if verdict.passed else CandidateStatus.DROPPED
+    assert rt.pr is not None and rt.diff is not None
+    pending = [c for c in rt.candidates if c.final_status == CandidateStatus.PENDING]
+    if not pending:
+        return
+    drafts = [(c.id, CandidateComment.model_validate(c.payload)) for c in pending]
+    if any(d.suggested_patch for _, d in drafts):
+        await ensure_workspace(rt)  # a resumed job may need a fresh sandbox to test patches
+
+    head_tests = None
+    if rt.analysis is not None:
+        head_pytest = next((o for o in rt.analysis.head if o.tool == "pytest" and o.available), None)
+        head_tests = head_pytest.tests if head_pytest else None
+    ctx = CriticContext(diff=rt.diff, config=rt.config, sandbox=rt.sandbox, workspace=rt.workspace,
+                        head_tests=head_tests)
+    reviser = Reviser(rt.llm, rt.cost, build_context(rt.pr, rt.diff_text, rt.diff, rt.evidence).text)
+    reflections = await reflect_all(drafts, ctx, reviser, get_settings().max_iterations)
+
+    # All DB writes after every await, so a retried attempt never saves rows twice
+    by_id = {c.id: c for c in pending}
+    for r in reflections:
+        cand = by_id[r.candidate_id]
+        for iteration, v in r.verdicts:
+            rt.pending_writes.append(models.CriticResult(
+                candidate_id=cand.id, iteration=iteration, critic=v.critic,
+                passed=v.passed, feedback=v.feedback[:4000], duration_ms=v.duration_ms,
+            ))
+        cand.payload = r.comment.model_dump()
+        cand.history = r.history
+        cand.iterations = r.iterations
+        cand.patch_verified = r.patch_verified
+        cand.verified = r.verified
+        if r.status == "dropped":
+            cand.final_status = CandidateStatus.DROPPED
+        else:
+            cand.final_status = CandidateStatus.VERIFIED if r.verified else CandidateStatus.ACCEPTED
         rt.pending_writes.append(cand)
-    accepted = sum(c.final_status == CandidateStatus.ACCEPTED for c in rt.candidates)
-    log.info("job.reflected", job_id=str(rt.job_id), candidates=len(rt.candidates), accepted=accepted)
+    rt.pending_writes += rt.llm.drain_records()  # reviser calls
+    rt.job_fields["cost_usd"] = rt.cost.spent
+    log.info("job.reflected", job_id=str(rt.job_id), candidates=len(reflections),
+             accepted=sum(r.status == "accepted" for r in reflections),
+             revised=sum(r.iterations > 1 for r in reflections),
+             patches_verified=sum(r.patch_verified for r in reflections))
 
 
 async def publish(rt: JobRuntime) -> None:
@@ -246,7 +277,8 @@ async def publish(rt: JobRuntime) -> None:
     ranked = select(accepted, rt.posted_hashes, rt.config.max_comments)
 
     result = await publish_review(
-        rt.gh, rt.repo_full_name, rt.pr_number, rt.head_sha, ranked, settings.bot_login
+        rt.gh, rt.repo_full_name, rt.pr_number, rt.head_sha, ranked, settings.bot_login,
+        patch_verified_ids=frozenset(c.id for c in rt.candidates if c.patch_verified),
     )
     evidence = rt.evidence or Evidence(ran=False, note="not recorded")
     summary = render_summary(rt.head_sha, ranked, dropped=len(rt.candidates) - len(ranked),

@@ -92,6 +92,8 @@ class FakeLLM:
         self.prompts.append(user)
         self.records.append(LLMCall(job_id=self.job_id, purpose=purpose, model="fake",
                                     input_tokens=10, output_tokens=5, cost_usd=0))
+        if purpose == "revise":
+            return schema.model_validate({"action": "drop", "reason": "fake reviser always drops"})
         return schema.model_validate({"comments": self.comments if self.calls == 1 else []})
 
     def drain_records(self):
@@ -214,7 +216,7 @@ async def test_drafted_comments_are_anchored_and_saved(session, sessionmaker):
     statuses = sorted((c.payload["line"], c.final_status) for c in cands)
     assert statuses == [(2, CandidateStatus.ACCEPTED), (50, CandidateStatus.DROPPED)]  # low confidence never saved
     assert critic_rows == 2
-    assert llm_rows == 3  # one call per category group
+    assert llm_rows == 4  # one call per category group + one reviser call for the bad anchor
     assert (await load(session, job_id)).state == JobState.DONE
 
 

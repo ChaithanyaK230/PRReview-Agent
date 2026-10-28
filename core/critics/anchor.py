@@ -1,5 +1,5 @@
 from core.agent.schemas import CandidateComment
-from core.critics.base import CriticVerdict
+from core.critics.base import Attempt, CriticContext, CriticVerdict
 from core.github.diffmap import DiffMap
 
 
@@ -22,3 +22,17 @@ def check_anchor(c: CandidateComment, diff: DiffMap) -> tuple[CandidateComment, 
         critic="anchor", passed=False,
         feedback=f"Line {c.line} of {c.path} is not in the diff. Commentable lines: {nearby}",
     )
+
+
+class AnchorCritic:
+    """Order 10. Runs first: later critics trust that c.path is a real file in this diff."""
+
+    name = "anchor"
+
+    def applies(self, c: CandidateComment, ctx: CriticContext) -> bool:
+        return True
+
+    async def check(
+        self, c: CandidateComment, ctx: CriticContext, attempt: Attempt
+    ) -> tuple[CandidateComment, CriticVerdict]:
+        return check_anchor(c, ctx.diff)

@@ -6,6 +6,7 @@ services:
     name: prreview
     runtime: docker
     plan: free
+    region: singapore  # same region as Neon (aws-ap-southeast-1) and Upstash: many DB calls per review
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:

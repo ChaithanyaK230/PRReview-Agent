@@ -185,6 +185,7 @@ class CandidateComment(Base):
     verified: Mapped[bool] = mapped_column(default=False)
     # not in LLD: the suggested fix applied and kept passing tests green → may be a one-click suggestion
     patch_verified: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    proof_test: Mapped[str | None] = mapped_column(Text)  # not in LLD: the test behind a "Verified" badge
     score: Mapped[float | None]
 
 

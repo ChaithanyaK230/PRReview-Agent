@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     daily_budget_usd: Decimal = Decimal("20.00")
     install_daily_quota: int = 30
     worker_concurrency: int = 4
+    embedded_worker: bool = False  # run the worker inside the API process (one free web service, e.g. Render)
     kill_switch: bool = False
-    demo_repos: Annotated[list[str], NoDecode] = []
+    demo_repos: Annotated[list[str], NoDecode] = []  # repos whose traces the dashboard shows publicly
+    public_url: str | None = None  # e.g. https://prreview.fly.dev; adds "View full trace" to summaries
 
     @field_validator("demo_repos", mode="before")
     @classmethod

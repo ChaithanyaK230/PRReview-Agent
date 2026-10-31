@@ -9,7 +9,7 @@ from core.analysis.detect import Toolchain
 from core.analysis.models import TestResult
 from core.analysis.runners.pytest import OUT_DIR
 from core.analysis.workspace import SideSetup, Workspace
-from core.critics.base import Attempt, CriticContext
+from core.critics.base import Attempt, CriticContext, protected_test_ids
 from core.critics.patch import PatchApplyCritic, PatchLintCritic, PatchTestsCritic
 from core.github.diffmap import DiffMap
 from core.sandbox.base import WORK_ROOT, ExecResult
@@ -31,9 +31,9 @@ def workspace():
     return Workspace(base=side("base"), head=side("head"), tools_ok=True)
 
 
-def ctx(sbx, head_tests=None):
+def ctx(sbx, head_tests=None, base_tests=None):
     return CriticContext(diff=DiffMap.from_diff(""), config=RepoConfig(), sandbox=sbx, workspace=workspace(),
-                         head_tests=head_tests)
+                         head_tests=head_tests, base_tests=base_tests)
 
 
 class CwdSandbox(FakeSandbox):
@@ -139,7 +139,7 @@ async def test_tests_pass_and_patched_code_is_put_first_on_the_path():
     sbx.files[f"{OUT_DIR}/patch-{ATTEMPT.candidate_id.hex[:12]}-junit.xml"] = junit(("test_add", ""))
     critic_ctx = ctx(sbx, head_tests=head_passing("test_add"))
     _, verdict = await PatchTestsCritic().check(cc(), critic_ctx, ATTEMPT)
-    assert verdict.passed and "1 previously passing tests still pass" in verdict.feedback
+    assert verdict.passed and "1 protected tests pass" in verdict.feedback
     pytest_cmd, cwd = next((c, d) for c, d in sbx.calls if "pytest" in c)
     assert pytest_cmd[0] == f"{HEAD}/.venv/bin/python"  # borrows head's interpreter
     assert cwd == critic_ctx.scratch_dir(ATTEMPT)          # but runs the patched copy
@@ -152,3 +152,31 @@ async def test_tests_skipped_without_a_baseline():
                                                                False, "", 0) for n in ("base", "head")), True))
     _, verdict = await PatchTestsCritic().check(cc(), critic_ctx, ATTEMPT)
     assert verdict.passed and verdict.feedback.startswith("skipped")
+
+
+def result(name, outcome="passed"):
+    return TestResult(test_id=f"test_calc.py::{name}", outcome=outcome)
+
+
+async def test_fix_that_only_makes_head_parse_is_rejected_when_base_disagrees():
+    """Live PR #16: head had `a /// b`, so no test loaded; the LLM's fix `a // b` parsed but broke multiply."""
+    head = [TestResult(test_id="test_calc.py::<collection>", outcome="error", message="SyntaxError")]
+    base = [result("test_add"), result("test_multiply")]
+    sbx = CwdSandbox()
+    sbx.files[f"{OUT_DIR}/patch-{ATTEMPT.candidate_id.hex[:12]}-junit.xml"] = junit(
+        ("test_add", ""), ("test_multiply", '<failure message="x">E   assert 0 == 20</failure>'))
+    _, verdict = await PatchTestsCritic().check(cc(), ctx(sbx, head_tests=head, base_tests=base), ATTEMPT)
+    assert not verdict.passed
+    assert "test_calc.py::test_multiply" in verdict.feedback and "intended behavior" in verdict.feedback
+
+
+def test_protected_tests_rules():
+    head = [result("test_add"), result("test_mul", "failed")]
+    # passing on base and still present on head: protected even though head currently fails it
+    assert protected_test_ids(head, [result("test_add"), result("test_mul")]) == {
+        "test_calc.py::test_add", "test_calc.py::test_mul"}
+    # a test the PR deleted is not protected; base results unknown (resumed job) -> head only
+    assert protected_test_ids(head, [result("test_old")]) == {"test_calc.py::test_add"}
+    assert protected_test_ids(head, None) == {"test_calc.py::test_add"}
+    # base tests failing on base protect nothing
+    assert protected_test_ids([], [result("test_x", "failed")]) == set()

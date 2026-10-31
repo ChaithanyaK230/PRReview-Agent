@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -22,6 +22,8 @@ class CriticVerdict(BaseModel):
     feedback: str = ""  # on failure: written for the reviser LLM, so it says what to change
     verified: bool = False
     duration_ms: int = 0
+    downgraded: bool = False  # bug_proof couldn't reproduce the claim, so severity was lowered
+    proof_test: str | None = None  # bug_proof: the test that demonstrated the bug
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class CriticContext:
     sandbox: Sandbox | None = None
     workspace: Workspace | None = None
     head_tests: list[TestResult] | None = None  # from the analyze step; None = not known
+    base_tests: list[TestResult] | None = None  # same, for base; None on a resumed job (not re-run)
+    prover: Any = None  # core.agent.prover.ProofWriter; None = bug proofs disabled
     _baseline: set[str] | None = field(default=None, init=False)
     _baseline_ready: bool = field(default=False, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
@@ -53,8 +57,8 @@ class CriticContext:
         # One folder per candidate per round (LLD §9.3), so parallel candidates never touch each other
         return f"{WORK_ROOT}/scratch/{attempt.candidate_id.hex[:12]}-{attempt.iteration}"
 
-    async def passing_head_tests(self) -> set[str] | None:
-        """Tests that pass on head without any patch; None if unknown. Computed at most once per job."""
+    async def protected_tests(self) -> set[str] | None:
+        """Tests a fix must leave passing (see protected_test_ids); None if unknown. Computed once per job."""
         async with self._lock:  # several candidates may ask at the same time
             if not self._baseline_ready:
                 self._baseline_ready = True
@@ -64,8 +68,25 @@ class CriticContext:
                     outcome = await run_pytest(self.sandbox, self.workspace.head, self.config)
                     tests = outcome.tests if outcome.available else None
                 if tests is not None:
-                    self._baseline = {t.test_id for t in tests if t.outcome == "passed"}
+                    self._baseline = protected_test_ids(tests, self.base_tests)
         return self._baseline
+
+
+def protected_test_ids(head: list[TestResult], base: list[TestResult] | None) -> set[str]:
+    """Passing on head, plus passing on base when head still has that test.
+
+    Base matters when the PR breaks a whole test file: on head nothing in it even loads (one
+    "<file>::<collection>" error), so "passing on head" is empty and a fix that merely parses looks safe.
+    Live PR #16: `a /// b` was "fixed" to `a // b` while base's test_multiply expected `a * b`.
+    Base tests that no longer exist on head (deleted or renamed by the PR) are not protected.
+    """
+    protected = {t.test_id for t in head if t.outcome == "passed"}
+    if base:
+        seen = {t.test_id for t in head}
+        unloadable = {tid.split("::")[0] for tid in seen if tid.endswith("::<collection>")}
+        protected |= {t.test_id for t in base if t.outcome == "passed"
+                      and (t.test_id in seen or t.test_id.split("::")[0] in unloadable)}
+    return protected
 
 
 class Critic(Protocol):

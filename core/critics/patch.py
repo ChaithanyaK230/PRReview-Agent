@@ -7,8 +7,8 @@ from core.analysis.delta import failure_signature, fingerprint
 from core.analysis.runners.pytest import run_pytest
 from core.analysis.runners.ruff import parse_ruff, ruff_check
 from core.analysis.workspace import SideSetup, copy_tree
-from core.critics.base import Attempt, CriticContext, CriticVerdict
-from core.critics.patching import PatchError, normalize_patch
+from core.critics.base import CriticContext, CriticVerdict
+from core.critics.patching import PatchError, align_to_file, normalize_patch
 
 PATCH_FILE = ".prreview-fix.patch"
 # GNU patch, not git apply: git rejects LLM hunks that only have leading context (verified in E2B).
@@ -34,6 +34,11 @@ class PatchApplyCritic(_PatchCritic):
             patch = normalize_patch(c.suggested_patch or "", c.path)
         except PatchError as e:
             return c, CriticVerdict(critic=self.name, passed=False, feedback=f"suggested_patch is unusable: {e}")
+        try:
+            original = (await ctx.sandbox.read_file(f"{ctx.workspace.head.root}/{c.path}")).decode("utf-8", "replace")
+            patch = align_to_file(patch, original)
+        except Exception:  # noqa: BLE001 - e.g. a new file: apply the patch as written
+            pass
         scratch = ctx.scratch_dir(attempt)
         await copy_tree(ctx.sandbox, ctx.workspace.head.root, scratch)
         await ctx.sandbox.write_file(f"{scratch}/{PATCH_FILE}", patch.encode())
@@ -74,12 +79,12 @@ class PatchLintCritic(_PatchCritic):
 
 
 class PatchTestsCritic(_PatchCritic):
-    """Order 60: every test that passes on head still passes with the patch applied."""
+    """Order 60: with the patch applied, every protected test passes (passing on head, or on base)."""
 
     name = "patch_tests"
 
     async def check(self, c, ctx, attempt):
-        baseline = await ctx.passing_head_tests()
+        baseline = await ctx.protected_tests()
         if baseline is None:
             return c, CriticVerdict(critic=self.name, passed=True, feedback="skipped: no test results for head")
         head = ctx.workspace.head
@@ -99,6 +104,6 @@ class PatchTestsCritic(_PatchCritic):
                 f"- {tid}: {failure_signature(results[tid].message) if tid in results else 'no longer runs'}"
                 for tid in broken[:MAX_LISTED])
             return c, CriticVerdict(critic=self.name, passed=False,
-                                    feedback=f"The patch breaks {len(broken)} test(s) that pass without it:\n{listed}")
-        return c, CriticVerdict(critic=self.name, passed=True,
-                                feedback=f"{len(baseline)} previously passing tests still pass")
+                                    feedback=f"With the patch, {len(broken)} test(s) fail that pass on base or "
+                                             f"head. Base shows the intended behavior:\n{listed}")
+        return c, CriticVerdict(critic=self.name, passed=True, feedback=f"{len(baseline)} protected tests pass")

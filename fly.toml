@@ -1,0 +1,44 @@
+# fly launch --no-deploy picks the app name; change it here if "prreview" is taken.
+app = "prreview"
+primary_region = "sin"
+
+[build]
+
+[deploy]
+  # Runs once per deploy, before new machines start. Migrations are expand-then-contract (LLD §20.3)
+  # so workers still on the old release can finish their in-flight jobs.
+  release_command = "alembic upgrade head"
+
+[env]
+  LLM_MODEL = "deepseek/deepseek-chat"
+  WORKER_CONCURRENCY = "2"
+
+[processes]
+  api = "uvicorn api.main:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips *"
+  worker = "arq worker.main.WorkerSettings"
+
+[http_service]
+  processes = ["api"]
+  internal_port = 8080
+  force_https = true
+  # GitHub webhooks must always find the API awake; the worker has no HTTP and never auto-stops
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/readyz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+
+[[vm]]
+  processes = ["api"]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "1gb"

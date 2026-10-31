@@ -57,24 +57,27 @@ def parse_junit(xml_text: str) -> list[TestResult]:
 
 
 async def run_pytest(
-    sbx: Sandbox, side: SideSetup, config: RepoConfig, env: dict[str, str] | None = None
+    sbx: Sandbox, side: SideSetup, config: RepoConfig, env: dict[str, str] | None = None,
+    targets: list[str] | None = None, timeout_s: int | None = None,
 ) -> ToolOutcome:
+    """Run the whole suite, or only `targets` (e.g. one proof test file)."""
     report = f"{OUT_DIR}/{side.side}-junit.xml"
+    timeout = timeout_s or config.test_timeout_s
     await sbx.exec(["mkdir", "-p", OUT_DIR], cwd="/", timeout_s=30)
     await sbx.exec(["rm", "-f", report], cwd="/", timeout_s=30)  # never read a stale report
     # TODO: honour config.test (custom test commands) — they can't be relied on to write JUnit
     result = await sbx.exec([
         side.python, "-m", "pytest", "-q", "-p", "no:cacheprovider",
         "--continue-on-collection-errors",  # one broken test file must not hide every other result
-        f"--junitxml={report}", "-o", "junit_family=xunit1",
-    ], cwd=side.root, timeout_s=config.test_timeout_s, env=env)
+        f"--junitxml={report}", "-o", "junit_family=xunit1", *(targets or []),
+    ], cwd=side.root, timeout_s=timeout, env=env)
 
     def outcome(available: bool, tests: list[TestResult] | None = None, log: str = "") -> ToolOutcome:
         return ToolOutcome("pytest", side.side, result.exit_code, result.duration_ms, result.timed_out,
                            available, [], tests or [], log)
 
     if result.timed_out:
-        return outcome(False, log=f"tests timed out after {config.test_timeout_s}s")
+        return outcome(False, log=f"tests timed out after {timeout}s")
     if result.exit_code not in USABLE_EXIT_CODES:
         return outcome(False, log=f"pytest exit {result.exit_code}: {(result.stderr or result.stdout)[-1000:]}")
     if result.exit_code == 5:

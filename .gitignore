@@ -10,3 +10,6 @@ wheels/
 .venv
 *.pem
 .env
+
+# Eval run outputs (baseline.json IS committed)
+evals/results/

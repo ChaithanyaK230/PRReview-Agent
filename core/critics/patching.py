@@ -53,3 +53,36 @@ def normalize_patch(patch: str, path: str) -> str:
         out.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")  # recounted, LLMs miscount
         out += body
     return "\n".join(out) + "\n"
+
+
+def align_to_file(patch: str, original: str) -> str:
+    """Undo a common LLM slip: an extra space after the diff marker ("-     x" for the file's "    x").
+
+    Decided per hunk against the real file: only when the hunk's old lines match the file with one
+    space removed and NOT as written. A patch that already matches is never touched.
+    Seen in evals 2026-10-29: the right fix (`a * b`) failed three rounds on exactly this.
+    """
+    file_lines = set(original.replace("\r\n", "\n").split("\n"))
+    out: list[str] = []
+    body: list[str] = []
+
+    def flush() -> None:
+        old = [ln[1:] for ln in body if ln[:1] in " -" and ln[1:].strip()]
+        changed = [ln[1:] for ln in body if ln[:1] in " +-" and ln[1:].strip()]
+        shifted = (
+            old
+            and not all(code in file_lines for code in old)
+            and all(code.startswith(" ") for code in changed)
+            and all(code[1:] in file_lines for code in old)
+        )
+        out.extend(ln[0] + ln[2:] if shifted and ln[:1] in " +-" and ln[1:].strip() else ln for ln in body)
+        body.clear()
+
+    for ln in patch.split("\n"):
+        if ln.startswith(("--- ", "+++ ", "@@")):
+            flush()
+            out.append(ln)
+        else:
+            body.append(ln)
+    flush()
+    return "\n".join(out)

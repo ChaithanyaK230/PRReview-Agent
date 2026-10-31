@@ -59,7 +59,8 @@ def suggestion_text(c: CandidateComment) -> str | None:
 
 
 def render_comment(
-    c: CandidateComment, candidate_id: uuid.UUID, verified: bool, patch_verified: bool = False
+    c: CandidateComment, candidate_id: uuid.UUID, verified: bool, patch_verified: bool = False,
+    proof_test: str | None = None,
 ) -> str:
     label = f"{'✅ Verified ' if verified else ''}{CATEGORY_LABEL[c.category]} · {c.severity}"
     parts = [f"{SEVERITY_ICON[c.severity]} **{label}**: {c.claim}", c.body]
@@ -74,15 +75,21 @@ def render_comment(
             f"<details><summary>Suggested fix ({status})</summary>\n\n"
             f"```diff\n{c.suggested_patch.strip()}\n```\n</details>"
         )
+    if verified and proof_test:
+        # The evidence behind the badge: anyone can copy it and run it themselves
+        parts.append(
+            "<details><summary>Proof test (fails on this PR, passes with the fix)</summary>\n\n"
+            f"```python\n{proof_test.strip()}\n```\n</details>"
+        )
     parts.append(candidate_marker(candidate_id))
     return "\n\n".join(parts)
 
 
-def review_comment_payload(r: Ranked, patch_verified: bool = False) -> dict[str, Any]:
+def review_comment_payload(r: Ranked, patch_verified: bool = False, proof_test: str | None = None) -> dict[str, Any]:
     c = r.comment
     payload: dict[str, Any] = {
         "path": c.path, "line": c.line, "side": c.side,
-        "body": render_comment(c, r.candidate_id, r.verified, patch_verified),
+        "body": render_comment(c, r.candidate_id, r.verified, patch_verified, proof_test),
     }
     if c.start_line is not None:
         payload["start_line"] = c.start_line
@@ -97,7 +104,10 @@ def _cell(text: str) -> str:
 DIFF_ONLY_NOTE = "Diff-only review: tests and linters were not run on this push."
 
 
-def render_summary(head_sha: str, posted: list[Ranked], dropped: int, evidence_note: str = DIFF_ONLY_NOTE) -> str:
+def render_summary(
+    head_sha: str, posted: list[Ranked], dropped: int, evidence_note: str = DIFF_ONLY_NOTE,
+    trace_url: str | None = None,
+) -> str:
     """The one summary comment per PR, edited in place on every push (LLD §15.4)."""
     lines = [SUMMARY_MARKER, f"### PR review · `{head_sha[:7]}`"]
     if not posted:
@@ -116,6 +126,8 @@ def render_summary(head_sha: str, posted: list[Ranked], dropped: int, evidence_n
     if dropped:
         lines.append(f"\n<sub>{dropped} draft comment(s) were dropped by checks or as duplicates.</sub>")
     lines.append(f"\n<sub>{evidence_note}</sub>")
+    if trace_url:
+        lines.append(f"\n[View full trace]({trace_url})")
     return "\n".join(lines)
 
 
@@ -139,8 +151,9 @@ class PublishResult:
 
 async def publish_review(
     gh: ReviewAPI, repo: str, number: int, head_sha: str, ranked: list[Ranked], bot_login: str,
-    patch_verified_ids: frozenset[uuid.UUID] = frozenset(),
+    patch_verified_ids: frozenset[uuid.UUID] = frozenset(), proofs: dict[uuid.UUID, str] | None = None,
 ) -> PublishResult:
+    proofs = proofs or {}
     if not ranked:
         return PublishResult(review_id=None)
 
@@ -157,14 +170,16 @@ async def publish_review(
         try:
             review_id = await gh.create_review(
                 repo, number, head_sha, "",
-                [review_comment_payload(r, r.candidate_id in patch_verified_ids) for r in ranked],
+                [review_comment_payload(r, r.candidate_id in patch_verified_ids, proofs.get(r.candidate_id))
+                 for r in ranked],
             )
         except ReviewRejected as e:
             # Fallback: same comments in the review body, so nothing is lost if one anchor is invalid
             log.warning("publish.inline_rejected", error=str(e))
             body = "\n\n---\n\n".join(
                 f"`{r.comment.path}:{r.comment.line}`\n\n"
-                f"{render_comment(r.comment, r.candidate_id, r.verified, r.candidate_id in patch_verified_ids)}"
+                f"{render_comment(r.comment, r.candidate_id, r.verified, r.candidate_id in patch_verified_ids,
+                                  proofs.get(r.candidate_id))}"
                 for r in ranked
             )
             review_id = await gh.create_review(repo, number, head_sha, body, [])

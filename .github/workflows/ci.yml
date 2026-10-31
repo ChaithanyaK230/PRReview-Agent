@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      evals:
+        description: "Also run the eval suite (real LLM + E2B, costs ~$0.03)"
+        type: boolean
+        default: false
+
+# Dummy values: unit and integration tests never call GitHub, the LLM or E2B.
+env:
+  GITHUB_APP_ID: "1"
+  GITHUB_PRIVATE_KEY: "ci-dummy"
+  GITHUB_WEBHOOK_SECRET: "ci-webhook-secret"
+  TOKEN_ENCRYPTION_KEY: "Y2ktb25seS1kdW1teS1rZXktbm90LWEtc2VjcmV0ISE="
+  OPENROUTER_API_KEY: "ci-dummy"
+  LLM_MODEL: "deepseek/deepseek-chat"
+  DATABASE_URL: "postgresql+asyncpg://prreview:prreview@127.0.0.1:5434/prreview_test"
+  TEST_DATABASE_URL: "postgresql+asyncpg://prreview:prreview@127.0.0.1:5434/prreview_test"
+  REDIS_URL: "redis://127.0.0.1:6379"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: prreview
+          POSTGRES_PASSWORD: prreview
+          POSTGRES_DB: prreview_test
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U prreview" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.7"
+      - run: uv sync --frozen
+      - name: Lint (pyflakes errors only)
+        run: uv run ruff check --select F,E9 .
+      - name: Tests (sandbox tests skipped by default)
+        run: uv run pytest -q
+      - name: Migrations apply cleanly
+        run: uv run alembic upgrade head
+
+  # LLD §20.3: prompt or critic changes must not drop precision more than 5 points below the baseline.
+  # Manual, because it spends real money and needs the real OpenRouter and E2B keys as repo secrets.
+  evals:
+    if: github.event_name == 'workflow_dispatch' && inputs.evals
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: prreview
+          POSTGRES_PASSWORD: prreview
+          POSTGRES_DB: prreview_eval
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U prreview" --health-interval 5s --health-retries 10
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.7"
+      - run: uv sync --frozen
+      - run: uv run python -m evals.run_evals --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: evals/results/latest.json

@@ -1,6 +1,6 @@
 import pytest
 
-from core.critics.patching import PatchError, normalize_patch
+from core.critics.patching import PatchError, align_to_file, normalize_patch
 
 GOOD = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
 
@@ -41,3 +41,23 @@ def test_multiple_hunks_are_kept():
 def test_unusable_patches_explain_why(patch, problem):
     with pytest.raises(PatchError, match=problem):
         normalize_patch(patch, "calc.py")
+
+
+FILE = "def add(a, b):\n    return a + b\n\n\ndef multiply(a, b):\n    return a /// b\n"
+
+
+def test_extra_space_after_the_marker_is_removed():
+    """What DeepSeek wrote in the syntax-typo eval: "-" plus five spaces for a four-space line."""
+    patch = "--- a/c.py\n+++ b/c.py\n@@ -5,2 +5,2 @@\n  def multiply(a, b):\n-     return a /// b\n+     return a * b\n"
+    assert align_to_file(patch, FILE).endswith(
+        "@@ -5,2 +5,2 @@\n def multiply(a, b):\n-    return a /// b\n+    return a * b\n")
+
+
+def test_patch_that_already_matches_is_untouched():
+    patch = "--- a/c.py\n+++ b/c.py\n@@ -6,1 +6,1 @@\n-    return a /// b\n+    return a * b\n"
+    assert align_to_file(patch, FILE) == patch
+
+
+def test_no_shift_when_it_would_not_match_either():
+    patch = "--- a/c.py\n+++ b/c.py\n@@ -6,1 +6,1 @@\n-     return something_else\n+     return 1\n"
+    assert align_to_file(patch, FILE) == patch

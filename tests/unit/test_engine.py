@@ -113,3 +113,42 @@ async def test_reflect_all_keeps_candidates_separate():
     drop = ReviseResponse(action="drop", reason="no")
     results = await reflect_all(items, CTX, ScriptedReviser(drop), 3, critics=[LineCritic()])
     assert [(r.candidate_id.int, r.status) for r in results] == [(1, "accepted"), (2, "dropped")]
+
+
+def with_patch(line=4):
+    return cc(line=line).model_copy(update={"suggested_patch": "@@ -4 +4 @@\n-a\n+b\n"})
+
+
+class PatchMustBeAbsent:
+    """Fails while the comment carries a patch, like patch_apply with a patch that never matches."""
+
+    name = "patch_apply"
+
+    def applies(self, c, ctx):
+        return c.suggested_patch is not None
+
+    async def check(self, c, ctx, attempt):
+        return c, CriticVerdict(critic=self.name, passed=False, feedback="Hunk #1 FAILED")
+
+
+async def test_correct_claim_with_unfixable_patch_is_salvaged_without_the_patch():
+    """The eval finding: 3 correct bug reports were dropped only because their patches never applied."""
+    keep_patch = ReviseResponse(action="revise", comment=with_patch(), reason="retry the patch")
+    out = await reflect_one(CID, with_patch(), [LineCritic(), PatchMustBeAbsent()], CTX,
+                            ScriptedReviser(keep_patch, keep_patch), 3)
+    assert out.status == "accepted" and out.comment.suggested_patch is None
+    assert not out.patch_verified  # the fix was never proven, so it isn't offered
+    assert out.history[-1]["suggested_patch"] is not None  # the failed patch is kept for the trace
+
+
+async def test_no_salvage_when_the_claim_itself_fails():
+    still_wrong = ReviseResponse(action="revise", comment=with_patch(line=41), reason="x")
+    out = await reflect_one(CID, with_patch(line=40), [LineCritic(), PatchMustBeAbsent()], CTX,
+                            ScriptedReviser(still_wrong, still_wrong), 3)
+    assert out.status == "dropped"  # anchor (a claim check) failed, not just the patch
+
+
+async def test_no_salvage_when_the_reviser_drops():
+    out = await reflect_one(CID, with_patch(), [LineCritic(), PatchMustBeAbsent()], CTX,
+                            ScriptedReviser(ReviseResponse(action="drop", reason="claim was wrong")), 3)
+    assert out.status == "dropped"

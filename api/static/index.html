@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR Review Agent · Traces</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #12151d; --panel-2: #171b25; --line: #232837; --line-2: #2d3446;
+    --text: #e6e9f2; --muted: #8b93a7; --faint: #5d6579;
+    --accent: #7c8cff; --green: #3ecf8e; --red: #f2555a; --amber: #f5b14c; --blue: #4cb3f5; --violet: #b18cff;
+    --radius: 12px; --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7fb; --panel: #ffffff; --panel-2: #f1f3f8; --line: #e3e6ee; --line-2: #d3d8e4;
+    --text: #151824; --muted: #5b6377; --faint: #8b93a7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; }
+  a { color: inherit; text-decoration: none; }
+  code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+
+  header { position: sticky; top: 0; z-index: 5; backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--bg) 85%, transparent); border-bottom: 1px solid var(--line); }
+  header .wrap { display: flex; align-items: center; gap: 12px; height: 56px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; }
+  .logo-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--violet)); color: #fff; font-size: 14px; }
+  .spacer { flex: 1; }
+  .btn { border: 1px solid var(--line-2); background: var(--panel); color: var(--text); border-radius: 8px;
+    padding: 6px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  .btn:hover { border-color: var(--accent); }
+
+  main { padding: 28px 0 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.02em; }
+  h2 { font-size: 15px; margin: 32px 0 12px; font-weight: 600; }
+  .sub { color: var(--muted); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 20px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-size: 26px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .stat .h { color: var(--faint); font-size: 12px; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; background: var(--panel-2); }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr.click { cursor: pointer; }
+  tbody tr.click:hover td { background: var(--panel-2); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px;
+    font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .b-green { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+  .b-red { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .b-amber { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .b-blue { color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); }
+  .b-violet { color: var(--violet); background: color-mix(in srgb, var(--violet) 14%, transparent); }
+  .b-gray { color: var(--muted); background: var(--panel-2); }
+
+  .back { color: var(--muted); font-size: 13px; display: inline-block; margin-bottom: 14px; }
+  .back:hover { color: var(--text); }
+  .job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); margin-top: 8px; font-size: 13px; }
+  .meta b { color: var(--text); font-weight: 500; }
+  .error { margin-top: 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+    background: color-mix(in srgb, var(--red) 8%, transparent); color: var(--red); font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; }
+
+  .stepper { display: flex; gap: 0; margin-top: 22px; overflow-x: auto; padding-bottom: 4px; }
+  .step { flex: 1; min-width: 104px; position: relative; padding-top: 18px; font-size: 12px; color: var(--faint); text-align: center; }
+  .step::before { content: ""; position: absolute; top: 5px; left: 0; right: 0; height: 2px; background: var(--line-2); }
+  .step::after { content: ""; position: absolute; top: 0; left: 50%; width: 12px; height: 12px; margin-left: -6px;
+    border-radius: 50%; background: var(--panel); border: 2px solid var(--line-2); }
+  .step.done { color: var(--text); } .step.done::before { background: var(--green); }
+  .step.done::after { background: var(--green); border-color: var(--green); }
+  .step.fail { color: var(--red); } .step.fail::after { background: var(--red); border-color: var(--red); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .cand { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 14px; }
+  .cand-head { padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+  .cand-head .claim { font-weight: 600; }
+  .cand-head .where { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-top: 2px; }
+  .cand-body { border-top: 1px solid var(--line); padding: 14px 16px; display: none; }
+  .cand.open .cand-body { display: block; }
+  .chev { color: var(--faint); transition: transform .15s; margin-top: 2px; }
+  .cand.open .chev { transform: rotate(90deg); }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; justify-content: flex-end; }
+  .body-text { white-space: pre-wrap; color: var(--muted); margin: 0 0 14px; }
+
+  .iter { display: grid; grid-template-columns: 80px 1fr; gap: 12px; padding: 10px 0; border-top: 1px dashed var(--line); }
+  .iter:first-of-type { border-top: 0; }
+  .iter .n { color: var(--muted); font-size: 12px; padding-top: 3px; }
+  .chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip { font-family: var(--mono); font-size: 11.5px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line-2); cursor: default; }
+  .chip.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+  .chip.no { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent);
+    background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .chip.skip { color: var(--faint); }
+  .arrow { color: var(--faint); font-size: 11px; }
+  .fb { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+  .changed { font-size: 12px; color: var(--amber); margin-top: 4px; }
+
+  pre { margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; line-height: 1.55; }
+  .add { color: var(--green); } .del { color: var(--red); } .hunk { color: var(--blue); }
+  .label { font-size: 12px; color: var(--muted); margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .06em; }
+
+  .empty { padding: 36px; text-align: center; color: var(--muted); }
+  .how { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+  .how div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; color: var(--muted); }
+  .how b { color: var(--text); display: block; font-size: 13px; }
+  .skeleton { height: 120px; border-radius: var(--radius); background: linear-gradient(90deg, var(--panel), var(--panel-2), var(--panel));
+    background-size: 200% 100%; animation: sh 1.2s infinite; }
+  @keyframes sh { to { background-position: -200% 0; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="logo" href="#/"><span class="logo-mark">✓</span> PR Review Agent</a>
+    <span class="sub" style="font-size:13px">traces</span>
+    <span class="spacer"></span>
+    <button class="btn" id="theme" title="Toggle theme">◐</button>
+    <button class="btn" id="refresh" title="Refresh">↻ Refresh</button>
+  </div>
+</header>
+<main class="wrap" id="app"><div class="skeleton"></div></main>
+
+<script>
+const STEPS = ["QUEUED", "FETCHING", "SANDBOX_READY", "ANALYZED", "DRAFTED", "REFLECTING", "PUBLISHING", "DONE"];
+const STATE_BADGE = { DONE: "b-green", FAILED: "b-red", CANCELLED: "b-gray" };
+const STATUS_BADGE = { verified: ["b-violet", "✓ Verified"], accepted: ["b-green", "Accepted"],
+  downgraded: ["b-amber", "Downgraded"], dropped: ["b-gray", "Dropped"], pending: ["b-blue", "Pending"] };
+const SEVERITY_BADGE = { high: "b-red", medium: "b-amber", low: "b-blue" };
+const app = document.getElementById("app");
+
+// Every string from the API may come from a PR author or the LLM: escape all of it.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = (v) => v == null ? "–" : "$" + Number(v).toFixed(v < 0.01 ? 4 : 3);
+const secs = (v) => v == null ? "–" : v < 90 ? `${Math.round(v)}s` : `${(v / 60).toFixed(1)}m`;
+const pct = (v) => v == null ? "–" : `${Math.round(v * 100)}%`;
+const ago = (iso) => {
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(iso).toLocaleDateString();
+};
+const badge = (cls, text) => `<span class="badge ${cls}">${esc(text)}</span>`;
+const stateBadge = (s) => badge(STATE_BADGE[s] || "b-blue", s.toLowerCase().replace("_", " "));
+
+async function api(path) {
+  const r = await fetch(path, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(r.status === 404 ? "Not found (only demo repos are public)" : `HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---------- Overview ----------
+async function overview() {
+  const [stats, jobs] = await Promise.all([api("/api/stats"), api("/api/jobs?limit=100")]);
+  const tiles = [
+    ["Reviews", stats.jobs, `${stats.by_state.DONE || 0} done · ${stats.by_state.FAILED || 0} failed`],
+    ["Comments posted", stats.comments_posted, `${stats.verified} proven by a test`],
+    ["Verified rate", pct(stats.verified_rate), "of posted bug comments"],
+    ["Mean cost", money(stats.mean_cost_usd), "per finished review"],
+    ["Latency", secs(stats.p50_s), `p95 ${secs(stats.p95_s)}`],
+  ];
+  app.innerHTML = `
+    <h1>Review traces</h1>
+    <div class="sub">Every draft comment, every critic verdict, every cent. The LLM proposes, deterministic checks decide.</div>
+    <div class="stats">${tiles.map(([k, v, h]) => `<div class="stat"><div class="k">${k}</div><div class="v">${esc(v)}</div><div class="h">${esc(h)}</div></div>`).join("")}</div>
+    <div class="how">
+      <div><b>1 · Sandbox</b>PR code runs in an isolated E2B VM, internet off</div>
+      <div><b>2 · Base vs head</b>ruff + pytest on both; only new breakage counts</div>
+      <div><b>3 · Draft</b>LLM writes schema-checked comments</div>
+      <div><b>4 · Critics</b>anchor → patch apply/lint/tests → bug proof</div>
+      <div><b>5 · Publish</b>Top 7, one review, Check Run never blocks</div>
+    </div>
+    <h2>Recent reviews</h2>
+    <div class="panel">${jobs.length ? `<div class="table-scroll"><table>
+      <thead><tr><th>Pull request</th><th>Commit</th><th>State</th><th class="num">Comments</th><th class="num">Verified</th><th class="num">Cost</th><th class="num">Duration</th><th>When</th></tr></thead>
+      <tbody>${jobs.map((j) => `<tr class="click" data-id="${esc(j.id)}">
+        <td><b>${esc(j.repo)}</b> <span class="sub">#${esc(j.pr)}</span></td>
+        <td class="mono sub">${esc(j.head_sha.slice(0, 7))}</td>
+        <td>${stateBadge(j.state)}</td>
+        <td class="num">${j.posted}</td>
+        <td class="num">${j.verified ? badge("b-violet", j.verified) : '<span class="sub">0</span>'}</td>
+        <td class="num">${money(j.cost_usd)}</td>
+        <td class="num">${secs(j.duration_s)}</td>
+        <td class="sub">${ago(j.created_at)}</td></tr>`).join("")}</tbody></table></div>`
+      : `<div class="empty">No reviews yet. Open a PR on a repo listed in <code>DEMO_REPOS</code>.</div>`}</div>`;
+  app.querySelectorAll("tr[data-id]").forEach((tr) => tr.onclick = () => location.hash = `#/jobs/${tr.dataset.id}`);
+}
+
+// ---------- Job ----------
+function stepper(job) {
+  const failed = job.state === "FAILED" || job.state === "CANCELLED";
+  const reached = failed ? -1 : STEPS.indexOf(job.state);
+  return `<div class="stepper">${STEPS.map((s, i) => {
+    const cls = i <= reached ? "done" : "";
+    return `<div class="step ${cls}">${s.toLowerCase().replace("_", " ")}</div>`;
+  }).join("")}${failed ? `<div class="step fail">${job.state.toLowerCase()}</div>` : ""}</div>`;
+}
+
+function toolTable(runs) {
+  if (!runs.length) return `<div class="empty">Diff-only review: no sandbox run for this push.</div>`;
+  const tools = [...new Set(runs.map((r) => r.tool))];
+  const cell = (r) => {
+    if (!r) return '<td class="sub">–</td>';
+    if (!r.available) return `<td>${badge("b-gray", "unavailable")}</td>`;
+    if (r.timed_out) return `<td>${badge("b-amber", "timed out")}</td>`;
+    return `<td>${badge(r.exit_code === 0 ? "b-green" : "b-amber", `exit ${r.exit_code}`)} <span class="sub">${(r.duration_ms / 1000).toFixed(1)}s</span></td>`;
+  };
+  return `<div class="table-scroll"><table><thead><tr><th>Tool</th><th>Base</th><th>Head</th></tr></thead><tbody>
+    ${tools.map((t) => `<tr><td class="mono">${esc(t)}</td>${cell(runs.find((r) => r.tool === t && r.side === "base"))}${cell(runs.find((r) => r.tool === t && r.side === "head"))}</tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function patchHtml(patch) {
+  return esc(patch).split("\n").map((l) =>
+    l.startsWith("@@") ? `<span class="hunk">${l}</span>` :
+    l.startsWith("+") && !l.startsWith("+++") ? `<span class="add">${l}</span>` :
+    l.startsWith("-") && !l.startsWith("---") ? `<span class="del">${l}</span>` : l).join("\n");
+}
+
+function whatChanged(prev, cur) {
+  if (!prev) return "";
+  const diffs = [];
+  if (prev.line !== cur.line) diffs.push(`line ${prev.line} → ${cur.line}`);
+  if (prev.claim !== cur.claim) diffs.push("claim rewritten");
+  if (prev.severity !== cur.severity) diffs.push(`severity ${prev.severity} → ${cur.severity}`);
+  if ((prev.suggested_patch || "") !== (cur.suggested_patch || "")) diffs.push(cur.suggested_patch ? "patch revised" : "patch removed (salvaged)");
+  return diffs.length ? `<div class="changed">revised: ${esc(diffs.join(" · "))}</div>` : "";
+}
+
+function candidateCard(c, i) {
+  const [cls, label] = STATUS_BADGE[c.final_status] || ["b-gray", c.final_status];
+  const cm = c.comment;
+  const iterations = c.iterations.map((it, k) => {
+    const chain = it.critics.length ? it.critics.map((v, idx) => {
+      const skipped = v.feedback.startsWith("skipped");
+      const kind = !v.passed ? "no" : skipped ? "skip" : "ok";
+      const mark = !v.passed ? "✗" : skipped ? "–" : "✓";
+      return `${idx ? '<span class="arrow">→</span>' : ""}<span class="chip ${kind}" title="${esc(v.feedback)} (${v.duration_ms} ms)">${mark} ${esc(v.critic)}</span>`;
+    }).join("") : '<span class="sub">no critic applied</span>';
+    const failing = it.critics.filter((v) => !v.passed && v.feedback);
+    return `<div class="iter"><div class="n">round ${it.n + 1}</div><div>
+      <div class="chain">${chain}</div>${whatChanged(c.iterations[k - 1]?.comment, it.comment)}
+      ${failing.map((v) => `<div class="fb">${esc(v.critic)}: ${esc(v.feedback.slice(0, 600))}</div>`).join("")}
+    </div></div>`;
+  }).join("");
+  return `<div class="cand${i === 0 ? " open" : ""}">
+    <div class="cand-head"><span class="chev">▶</span>
+      <div><div class="claim">${esc(cm.claim)}</div><div class="where">${esc(cm.path)}:${esc(cm.line)} · ${esc(cm.category)} · confidence ${esc(cm.confidence)}</div></div>
+      <div class="tags">${badge(cls, label)}${badge(SEVERITY_BADGE[cm.severity] || "b-gray", cm.severity)}
+        ${c.patch_verified ? badge("b-green", "fix verified") : ""}${c.posted ? badge("b-blue", "posted") : ""}</div>
+    </div>
+    <div class="cand-body">
+      <p class="body-text">${esc(cm.body)}</p>
+      <div class="label">Reflection · ${c.iterations.length} version${c.iterations.length > 1 ? "s" : ""}</div>
+      ${iterations}
+      ${c.proof_test ? `<div class="label">Proof test (fails on head, passes with the fix)</div><pre>${esc(c.proof_test)}</pre>` : ""}
+      ${cm.suggested_patch ? `<div class="label">Suggested fix</div><pre>${patchHtml(cm.suggested_patch)}</pre>` : ""}
+    </div></div>`;
+}
+
+async function jobView(id) {
+  const [job, cands] = await Promise.all([api(`/api/jobs/${id}`), api(`/api/jobs/${id}/candidates`)]);
+  const llmCost = job.llm_calls.reduce((a, c) => a + c.cost_usd, 0);
+  const tokens = job.llm_calls.reduce((a, c) => a + c.input_tokens + c.output_tokens, 0);
+  const order = { verified: 0, accepted: 1, downgraded: 2, pending: 3, dropped: 4 };
+  cands.sort((a, b) => (order[a.final_status] ?? 9) - (order[b.final_status] ?? 9));
+  const counts = cands.reduce((m, c) => (m[c.final_status] = (m[c.final_status] || 0) + 1, m), {});
+  const prUrl = `https://github.com/${job.repo}/pull/${job.pr}`;
+
+  app.innerHTML = `
+    <a class="back" href="#/">← All reviews</a>
+    <div class="job-head"><h1>${esc(job.repo)} <span class="sub">#${esc(job.pr)}</span></h1>${stateBadge(job.state)}
+      <a class="btn" href="${esc(prUrl)}" target="_blank" rel="noopener">Open PR ↗</a></div>
+    <div class="meta">
+      <span>base <b class="mono">${esc(job.base_sha.slice(0, 7))}</b> → head <b class="mono">${esc(job.head_sha.slice(0, 7))}</b></span>
+      <span>cost <b>${money(job.cost_usd)}</b></span><span>duration <b>${secs(job.duration_s)}</b></span>
+      <span>posted <b>${job.posted}</b> · verified <b>${job.verified}</b></span><span>${esc(new Date(job.created_at).toLocaleString())}</span>
+    </div>
+    ${job.error ? `<div class="error">${esc(job.error)}</div>` : ""}
+    ${stepper(job)}
+
+    <h2>Draft comments <span class="sub">· ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(" · ") || "none"}</span></h2>
+    ${cands.length ? cands.map(candidateCard).join("") : `<div class="panel empty">The model found nothing worth saying.</div>`}
+
+    <div class="grid2">
+      <div><h2>Sandbox evidence</h2><div class="panel">${toolTable(job.tool_runs)}</div></div>
+      <div><h2>LLM calls <span class="sub">· ${tokens.toLocaleString()} tokens · ${money(llmCost)}</span></h2><div class="panel">
+        ${job.llm_calls.length ? `<div class="table-scroll"><table><thead><tr><th>Purpose</th><th>Model</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>
+        ${job.llm_calls.map((c) => `<tr><td>${esc(c.purpose)}</td><td class="mono sub">${esc(c.model)}</td><td class="num">${(c.input_tokens + c.output_tokens).toLocaleString()}</td><td class="num">${money(c.cost_usd)}</td></tr>`).join("")}
+        </tbody></table></div>` : `<div class="empty">No LLM calls recorded.</div>`}</div></div>
+    </div>
+
+    <h2>New findings this PR introduced <span class="sub">· ${job.findings.length}</span></h2>
+    <div class="panel">${job.findings.length ? `<div class="table-scroll"><table><thead><tr><th>Tool</th><th>Rule</th><th>Location</th><th>Message</th></tr></thead><tbody>
+      ${job.findings.map((f) => `<tr><td class="mono">${esc(f.tool)}</td><td class="mono">${esc(f.rule)}</td><td class="mono sub">${esc(f.path)}:${esc(f.line)}</td><td style="white-space:normal">${esc(f.message.slice(0, 300))}</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">Nothing new: base and head agree.</div>`}</div>`;
+
+  app.querySelectorAll(".cand-head").forEach((h) => h.onclick = () => h.parentElement.classList.toggle("open"));
+}
+
+// ---------- Router ----------
+async function route() {
+  const m = location.hash.match(/^#\/jobs\/([0-9a-f-]{36})/);
+  app.innerHTML = '<div class="skeleton"></div>';
+  try { m ? await jobView(m[1]) : await overview(); }
+  catch (e) { app.innerHTML = `<a class="back" href="#/">← All reviews</a><div class="panel empty">${esc(e.message)}</div>`; }
+  window.scrollTo(0, 0);
+}
+
+const root = document.documentElement;
+try { const t = localStorage.getItem("theme"); if (t) root.dataset.theme = t; } catch {}
+document.getElementById("theme").onclick = () => {
+  root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch {}
+};
+document.getElementById("refresh").onclick = route;
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

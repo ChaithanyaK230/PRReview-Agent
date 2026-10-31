@@ -86,3 +86,43 @@ async def test_patch_critics_judge_real_patches():
 
         wrong = await judge(WRONG_CODE_FIX)
         assert wrong.status == "dropped" and wrong.verdicts[-1][1].critic == "patch_apply"
+
+
+class ScriptedProver:
+    """Stands in for the LLM: returns a fixed proof test."""
+
+    def __init__(self, content):
+        self.content = content
+
+    async def write(self, comment, file_text, previous_error=None):
+        from core.agent.prover import ProofTest
+        return ProofTest(content=self.content)
+
+
+async def test_bug_proof_verifies_a_real_bug():
+    from core.critics.proof import BugProofCritic
+
+    key = get_settings().e2b_api_key
+    if key is None:
+        pytest.skip("E2B_API_KEY not set")
+    config = RepoConfig()
+    async with await E2BSandbox.create(key.get_secret_value(), lifetime_s=600) as sbx:
+        tar = repo_tarball()
+        ws = await prepare_workspace(sbx, tar, tar, config)
+        critics = [AnchorCritic(), PatchApplyCritic(), PatchLintCritic(), PatchTestsCritic(), BugProofCritic()]
+
+        def ctx(proof):
+            return CriticContext(diff=DIFF, config=config, sandbox=sbx, workspace=ws,
+                                 prover=ScriptedProver(proof))
+
+        bug = comment(GOOD_FIX).model_copy(update={"evidence_needed": "repro_test"})
+        real_proof = "from calc import add\n\n\ndef test_add_adds():\n    assert add(2, 3) == 5\n"
+        verified = await reflect_one(uuid.uuid4(), bug, critics, ctx(real_proof), NoReviser(), 1)
+        assert verified.status == "accepted" and verified.verified and verified.patch_verified
+        assert verified.proof_test == real_proof
+
+        # a "proof" that doesn't show the bug (it passes on the buggy code) must NOT verify anything
+        weak_proof = "from calc import multiply\n\n\ndef test_multiply():\n    assert multiply(2, 3) == 6\n"
+        weak = await reflect_one(uuid.uuid4(), bug, critics, ctx(weak_proof), NoReviser(), 1)
+        assert weak.status == "accepted" and not weak.verified and weak.downgraded
+        assert weak.comment.severity == "medium"

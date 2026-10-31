@@ -1,0 +1,39 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick this repo.
+# Free plan = one web service, so the worker runs inside the API process (EMBEDDED_WORKER).
+# Secrets are `sync: false`: Render asks for them in its dashboard; they never live in git.
+services:
+  - type: web
+    name: prreview
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: EMBEDDED_WORKER
+        value: "true"
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: LLM_MODEL
+        value: deepseek/deepseek-chat
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: BOT_LOGIN
+        sync: false
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: E2B_API_KEY
+        sync: false
+      - key: DEMO_REPOS
+        sync: false
+      - key: PUBLIC_URL
+        sync: false

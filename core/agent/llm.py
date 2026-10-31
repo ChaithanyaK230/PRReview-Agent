@@ -96,4 +96,7 @@ class LLM:
             input_tokens=tokens_in, output_tokens=tokens_out, cost_usd=cost,
         ))
         log.info("llm.call", purpose=str(purpose), tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=str(cost))
+        if not resp.choices:
+            # Seen in evals: under upstream rate limiting OpenRouter can answer HTTP 200 with no choices
+            raise TransientError("LLM returned no choices (provider overloaded)")
         return resp.choices[0].message.content or ""

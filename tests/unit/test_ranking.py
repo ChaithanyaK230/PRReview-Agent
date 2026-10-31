@@ -24,6 +24,16 @@ def test_verified_beats_unverified():
     assert select(plain + verified, set(), cap=7)[0].comment.line == 30  # 3.4 vs 3.0
 
 
+def test_twin_with_a_tested_fix_wins_but_never_beats_higher_severity():
+    """Live PR #16: two drafts of the same bug, only one carrying the verified `a * b` fix."""
+    (bare_id, bare, _), (fix_id, with_fix, _) = items(cc(6, "high", 0.95), cc(6, "high", 0.9))
+    ranked = select([(bare_id, bare, False), (fix_id, with_fix, False)], set(), 7, fix_verified=frozenset({fix_id}))
+    assert [r.candidate_id for r in ranked] == [fix_id]
+    (high_id, high, _), (med_id, med, _) = items(cc(1, "high", 0.5), cc(20, "medium", 0.9))
+    ranked = select([(high_id, high, False), (med_id, med, False)], set(), 7, fix_verified=frozenset({med_id}))
+    assert ranked[0].candidate_id == high_id  # 2.5 vs 1.9 + 0.5
+
+
 def test_nearby_comments_keep_only_the_best():
     ranked = select(items(cc(4, "high", 1.0), cc(4, "medium", 0.8, category="test_gap"), cc(7, "low")), set(), 7)
     assert [r.comment.line for r in ranked] == [4]
@@ -44,3 +54,26 @@ def test_cap():
 
 def test_claim_hash_ignores_case_and_spacing():
     assert claim_hash(cc(1, claim="Missing  await on send")) == claim_hash(cc(9, claim="missing await on SEND"))
+
+
+def test_winner_adopts_the_tested_fix_of_a_duplicate_on_the_same_line():
+    """Live PR #17: the patch-less twin won; the downgraded twin's verified fix was thrown away."""
+    winner_id, loser_id = uuid.uuid4(), uuid.uuid4()
+    bare = cc(6, "high", 0.95, claim="undefined name c")
+    fixed = cc(6, "medium", 0.9, claim="c is undefined").model_copy(update={"suggested_patch": "@@ -6 +6 @@\n-x\n+y\n"})
+    ranked = select([(winner_id, bare, False), (loser_id, fixed, False)], set(), 7,
+                    fix_verified=frozenset({loser_id}))
+    assert len(ranked) == 1 and ranked[0].candidate_id == winner_id
+    assert ranked[0].comment.claim == "undefined name c"            # the winner's words and severity stay
+    assert ranked[0].comment.suggested_patch == fixed.suggested_patch and ranked[0].fix_verified
+
+
+def test_no_adoption_from_another_line_or_an_unverified_fix():
+    winner_id, other_id = uuid.uuid4(), uuid.uuid4()
+    patched = cc(7, "low", 0.1).model_copy(update={"suggested_patch": "@@ -7 +7 @@\n-x\n+y\n"})
+    ranked = select([(winner_id, cc(6, "high", 0.9), False), (other_id, patched, False)], set(), 7,
+                    fix_verified=frozenset({other_id}))
+    assert ranked[0].comment.suggested_patch is None and not ranked[0].fix_verified  # line 7 != line 6
+    same_line = cc(6, "low", 0.1).model_copy(update={"suggested_patch": "@@ -6 +6 @@\n-x\n+y\n"})
+    ranked = select([(winner_id, cc(6, "high", 0.9), False), (other_id, same_line, False)], set(), 7)
+    assert ranked[0].comment.suggested_patch is None  # its fix was never verified

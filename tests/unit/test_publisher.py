@@ -77,6 +77,12 @@ def test_summary_table_escapes_pipes():
     assert "2 draft comment(s) were dropped" in text
 
 
+def test_summary_links_the_trace_only_when_public_url_is_set():
+    assert "View full trace" not in render_summary("abc1234", [], dropped=0)
+    url = "https://prreview.fly.dev/#/jobs/123"
+    assert render_summary("abc1234", [], dropped=0, trace_url=url).endswith(f"[View full trace]({url})")
+
+
 def test_check_run_never_fails():
     assert check_run_title([]) == ("success", "No issues found")
     assert check_run_title(select([(CID, cc(), False)], set(), 7)) == ("neutral", "1 comment, 0 verified")
@@ -124,3 +130,15 @@ async def test_nothing_to_post_makes_no_review():
     gh = FakeReviews()
     assert (await publish_review(gh, "o/r", 1, "h" * 40, [], BOT)).review_id is None
     assert gh.created == []
+
+
+def test_verified_comment_shows_its_proof_test():
+    proof = "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    body = render_comment(cc(), CID, verified=True, proof_test=proof)
+    assert "Verified" in body
+    assert "Proof test (fails on this PR, passes with the fix)" in body
+    assert "assert add(2, 3) == 5" in body
+
+
+def test_unverified_comment_never_shows_a_proof():
+    assert "Proof test" not in render_comment(cc(), CID, verified=False, proof_test="x = 1")

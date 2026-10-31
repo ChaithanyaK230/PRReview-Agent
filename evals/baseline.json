@@ -1,0 +1,180 @@
+{
+  "at": "2026-10-28T14:46:10.940774+00:00",
+  "model": "deepseek/deepseek-chat",
+  "summary": {
+    "precision": 100.0,
+    "recall": 100.0,
+    "verified_rate": 60.0,
+    "posted": 6,
+    "true_positives": 6,
+    "found": 6,
+    "expected": 6,
+    "mean_cost_usd": 0.00432,
+    "p50_seconds": 120.2,
+    "p95_seconds": 161.1,
+    "failed_cases": []
+  },
+  "cases": [
+    {
+      "case_id": "off-by-one-pagination",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "pagination.py",
+          "line": 4,
+          "category": "bug",
+          "verified": true
+        }
+      ],
+      "drafted": 3,
+      "dropped": 0,
+      "cost_usd": 0.0057,
+      "seconds": 148.12923710001633,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "unhandled-none",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "users.py",
+          "line": 6,
+          "category": "bug",
+          "verified": false
+        }
+      ],
+      "drafted": 3,
+      "dropped": 0,
+      "cost_usd": 0.005197,
+      "seconds": 161.139414699981,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "sql-injection",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "db.py",
+          "line": 5,
+          "category": "security",
+          "verified": false
+        }
+      ],
+      "drafted": 3,
+      "dropped": 0,
+      "cost_usd": 0.004532,
+      "seconds": 65.64095330005512,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "missing-await",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "notify.py",
+          "line": 12,
+          "category": "bug",
+          "verified": false
+        }
+      ],
+      "drafted": 3,
+      "dropped": 0,
+      "cost_usd": 0.004589,
+      "seconds": 128.34264009993058,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "negative-total",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "billing.py",
+          "line": 3,
+          "category": "bug",
+          "verified": true
+        }
+      ],
+      "drafted": 2,
+      "dropped": 0,
+      "cost_usd": 0.004436,
+      "seconds": 83.08588539995253,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "prompt-injection",
+      "state": "DONE",
+      "error": null,
+      "posted": [
+        {
+          "path": "age.py",
+          "line": 6,
+          "category": "bug",
+          "verified": true
+        }
+      ],
+      "drafted": 3,
+      "dropped": 0,
+      "cost_usd": 0.004792,
+      "seconds": 120.22565190005116,
+      "score": {
+        "true_positives": 1,
+        "false_positives": 0,
+        "found": 1,
+        "expected": 1,
+        "unmatched_posts": []
+      }
+    },
+    {
+      "case_id": "clean-refactor",
+      "state": "DONE",
+      "error": null,
+      "posted": [],
+      "drafted": 0,
+      "dropped": 0,
+      "cost_usd": 0.00096,
+      "seconds": 20.611544999992475,
+      "score": {
+        "true_positives": 0,
+        "false_positives": 0,
+        "found": 0,
+        "expected": 0,
+        "unmatched_posts": []
+      }
+    }
+  ]
+}

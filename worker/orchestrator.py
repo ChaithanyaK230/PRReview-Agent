@@ -13,11 +13,12 @@ from core.agent.schemas import CandidateComment
 from core.analysis.config import CONFIG_PATH, RepoConfig, load_config
 from core.analysis.delta import Delta, TestChange, compute_delta
 from core.analysis.evidence import Evidence
-from core.analysis.models import Finding, TestResult
+from core.analysis.models import Finding, TestResult, ToolOutcome
 from core.analysis.runners import Analysis, run_analysis
 from core.analysis.workspace import Workspace, prepare_workspace
 from core.context.builder import build_context
 from core.cost import CostMeter
+from core.agent.prover import ProofWriter
 from core.agent.reviser import Reviser
 from core.critics.base import CriticContext
 from core.critics.engine import reflect_all
@@ -231,12 +232,11 @@ async def reflect(rt: JobRuntime) -> None:
     if any(d.suggested_patch for _, d in drafts):
         await ensure_workspace(rt)  # a resumed job may need a fresh sandbox to test patches
 
-    head_tests = None
+    head_tests = base_tests = None
     if rt.analysis is not None:
-        head_pytest = next((o for o in rt.analysis.head if o.tool == "pytest" and o.available), None)
-        head_tests = head_pytest.tests if head_pytest else None
+        head_tests, base_tests = _pytest_results(rt.analysis.head), _pytest_results(rt.analysis.base)
     ctx = CriticContext(diff=rt.diff, config=rt.config, sandbox=rt.sandbox, workspace=rt.workspace,
-                        head_tests=head_tests)
+                        head_tests=head_tests, base_tests=base_tests, prover=ProofWriter(rt.llm, rt.cost))
     reviser = Reviser(rt.llm, rt.cost, build_context(rt.pr, rt.diff_text, rt.diff, rt.evidence).text)
     reflections = await reflect_all(drafts, ctx, reviser, get_settings().max_iterations)
 
@@ -254,17 +254,28 @@ async def reflect(rt: JobRuntime) -> None:
         cand.iterations = r.iterations
         cand.patch_verified = r.patch_verified
         cand.verified = r.verified
+        cand.proof_test = r.proof_test
         if r.status == "dropped":
             cand.final_status = CandidateStatus.DROPPED
+        elif r.verified:
+            cand.final_status = CandidateStatus.VERIFIED
+        elif r.downgraded:
+            cand.final_status = CandidateStatus.DOWNGRADED  # still posted, at the lowered severity
         else:
-            cand.final_status = CandidateStatus.VERIFIED if r.verified else CandidateStatus.ACCEPTED
+            cand.final_status = CandidateStatus.ACCEPTED
         rt.pending_writes.append(cand)
     rt.pending_writes += rt.llm.drain_records()  # reviser calls
     rt.job_fields["cost_usd"] = rt.cost.spent
     log.info("job.reflected", job_id=str(rt.job_id), candidates=len(reflections),
              accepted=sum(r.status == "accepted" for r in reflections),
              revised=sum(r.iterations > 1 for r in reflections),
-             patches_verified=sum(r.patch_verified for r in reflections))
+             patches_verified=sum(r.patch_verified for r in reflections),
+             bugs_verified=sum(r.verified for r in reflections))
+
+
+def _pytest_results(outcomes: list[ToolOutcome]) -> list[TestResult] | None:
+    found = next((o for o in outcomes if o.tool == "pytest" and o.available), None)
+    return found.tests if found else None
 
 
 async def publish(rt: JobRuntime) -> None:
@@ -272,17 +283,23 @@ async def publish(rt: JobRuntime) -> None:
     accepted = [
         (c.id, CandidateComment.model_validate(c.payload), c.final_status == CandidateStatus.VERIFIED)
         for c in rt.candidates
-        if c.final_status in (CandidateStatus.ACCEPTED, CandidateStatus.VERIFIED)
+        # Downgraded comments are posted too (at their lowered severity), unlike the LLD's ranking: the
+        # claim may still be right even when a proof test couldn't be written
+        if c.final_status in (CandidateStatus.ACCEPTED, CandidateStatus.VERIFIED, CandidateStatus.DOWNGRADED)
     ]
-    ranked = select(accepted, rt.posted_hashes, rt.config.max_comments)
+    patch_verified_ids = frozenset(c.id for c in rt.candidates if c.patch_verified)
+    ranked = select(accepted, rt.posted_hashes, rt.config.max_comments, fix_verified=patch_verified_ids)
 
     result = await publish_review(
         rt.gh, rt.repo_full_name, rt.pr_number, rt.head_sha, ranked, settings.bot_login,
-        patch_verified_ids=frozenset(c.id for c in rt.candidates if c.patch_verified),
+        # includes fixes a winning comment adopted from a duplicate on the same line
+        patch_verified_ids=frozenset(r.candidate_id for r in ranked if r.fix_verified),
+        proofs={c.id: c.proof_test for c in rt.candidates if c.proof_test},
     )
     evidence = rt.evidence or Evidence(ran=False, note="not recorded")
+    trace_url = f"{settings.public_url.rstrip('/')}/#/jobs/{rt.job_id}" if settings.public_url else None
     summary = render_summary(rt.head_sha, ranked, dropped=len(rt.candidates) - len(ranked),
-                             evidence_note=evidence.summary_line())
+                             evidence_note=evidence.summary_line(), trace_url=trace_url)
     summary_id = await rt.gh.upsert_issue_comment(
         rt.repo_full_name, rt.pr_number, SUMMARY_MARKER, summary, settings.bot_login
     )

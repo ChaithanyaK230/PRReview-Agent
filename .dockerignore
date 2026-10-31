@@ -1,0 +1,15 @@
+# Secrets never enter the image: Fly injects them as env vars (fly secrets set)
+.env
+.env.*
+*.pem
+
+.venv
+.git
+.github
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+evals/results
+*.md
+!README.md

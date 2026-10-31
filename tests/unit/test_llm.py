@@ -114,3 +114,12 @@ async def test_exhausted_budget_blocks_the_call():
     with pytest.raises(BudgetExceeded):
         await ask(await make_llm(server), meter)
     assert server.requests == []  # no request was ever sent
+
+
+async def test_success_with_no_choices_is_transient():
+    """Found by the evals: OpenRouter under rate limiting answered 200 with `choices: null`."""
+    empty = httpx2.Response(200, json={"id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                                       "choices": None, "usage": {"prompt_tokens": 5, "completion_tokens": 0,
+                                                                  "total_tokens": 5}})
+    with pytest.raises(TransientError):
+        await ask(await make_llm(FakeOpenRouter(empty)))
